@@ -10,6 +10,9 @@ services:
       - AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT:-19332}
       - AZ_RPC_USER=${AZ_RPC_USER}
       - AZ_RPC_PASSWORD=${AZ_RPC_PASSWORD}
+      - BTC_RPC_URL=http://bitcoin-core:${BTC_RPC_PORT:-8332}
+      - BTC_RPC_USER=${BTC_RPC_USER}
+      - BTC_RPC_PASSWORD=${BTC_RPC_PASSWORD}
     ports:
       - "8080:8080"
     restart: unless-stopped
@@ -17,6 +20,8 @@ services:
       - aznet
     depends_on:
       azcoin-core:
+        condition: service_healthy
+      bitcoin-core:
         condition: service_healthy
     healthcheck:
       test:
@@ -60,9 +65,42 @@ services:
       timeout: 5s
       retries: 30
 
+  bitcoin-core:
+    image: ${BITCOIN_CORE_IMAGE:-bitcoin/bitcoin-core:28.0}
+    restart: unless-stopped
+    networks:
+      - aznet
+    environment:
+      - BTC_RPC_PORT=${BTC_RPC_PORT:-8332}
+      - BTC_RPC_USER=${BTC_RPC_USER}
+      - BTC_RPC_PASSWORD=${BTC_RPC_PASSWORD}
+    volumes:
+      - bitcoin-core-data:/data
+    command:
+      - "-datadir=/data"
+      - "-printtoconsole"
+      - "-server=1"
+      - "-rpcbind=0.0.0.0"
+      - "-rpcallowip=172.16.0.0/12"
+      - "-rpcallowip=192.168.0.0/16"
+      - "-rpcallowip=10.0.0.0/8"
+      - "-rpcuser=${BTC_RPC_USER}"
+      - "-rpcpassword=${BTC_RPC_PASSWORD}"
+      - "-rpcport=${BTC_RPC_PORT:-8332}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "if command -v bitcoin-cli >/dev/null 2>&1; then bitcoin-cli -datadir=/data -rpcconnect=127.0.0.1 -rpcport=$${BTC_RPC_PORT:-8332} -rpcuser=$${BTC_RPC_USER} -rpcpassword=$${BTC_RPC_PASSWORD} getblockchaininfo >/dev/null 2>&1; elif command -v curl >/dev/null 2>&1; then curl -sf -u \"$${BTC_RPC_USER}:$${BTC_RPC_PASSWORD}\" -H 'content-type: text/plain;' --data-binary '{\"jsonrpc\":\"1.0\",\"id\":\"hc\",\"method\":\"getblockchaininfo\",\"params\":[]}' http://127.0.0.1:$${BTC_RPC_PORT:-8332}/ >/dev/null; else exit 1; fi",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
 networks:
   aznet:
     external: true
 
 volumes:
   azcoin-core-data:
+  bitcoin-core-data:

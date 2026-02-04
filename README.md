@@ -40,8 +40,14 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_USER**: AZCoin JSON-RPC username
 - **AZ_RPC_PASSWORD**: AZCoin JSON-RPC password
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
+- **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
+- **BTC_RPC_USER**: Bitcoin JSON-RPC username
+- **BTC_RPC_PASSWORD**: Bitcoin JSON-RPC password
+- **BTC_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
 - **AZ_RPC_PORT**: RPC port used by docker compose (default: `19332`)
 - **AZCOIN_CORE_IMAGE**: core docker image used by compose (default: `ghcr.io/satoshiware/azcoin-node:latest`)
+- **BTC_RPC_PORT**: Bitcoin RPC port used by docker compose (default: `8332`)
+- **BITCOIN_CORE_IMAGE**: bitcoin core docker image used by compose (default: `bitcoin/bitcoin-core:28.0`)
 
 Protected routes (currently `/v1/az/*`) require:
 
@@ -65,11 +71,13 @@ Service name in compose: `azcoin-api`
 Notes:
 - `docker-compose.yml` starts `azcoin-core` on the external network `aznet` and wires the API to it via `AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT}`.
 - The core RPC port is **not** published to the host; it is only reachable inside `aznet`.
+- `docker-compose.yml` also starts `bitcoin-core` and wires the API to it via `BTC_RPC_URL=http://bitcoin-core:${BTC_RPC_PORT}`.
 
 ## API endpoints (v0.1)
 
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
+- **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 
 ## Tests
 

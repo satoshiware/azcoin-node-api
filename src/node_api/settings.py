@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     )
     az_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="AZ_RPC_TIMEOUT_SECONDS")
 
+    # Bitcoin RPC (used by `/v1/btc/*`)
+    btc_rpc_url: str | None = Field(default=None, validation_alias="BTC_RPC_URL")
+    btc_rpc_user: str | None = Field(default=None, validation_alias="BTC_RPC_USER")
+    btc_rpc_password: SecretStr | None = Field(
+        default=None, validation_alias="BTC_RPC_PASSWORD", repr=False
+    )
+    btc_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="BTC_RPC_TIMEOUT_SECONDS")
+
     @model_validator(mode="before")
     @classmethod
     def _default_auth_mode(cls, data: Any) -> Any:
