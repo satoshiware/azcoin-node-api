@@ -1,3 +1,6 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-requests==2.32.3
+# Back-compat file.
+#
+# Prefer `requirements.txt` and `requirements-dev.txt`.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic-settings>=2.2.0
