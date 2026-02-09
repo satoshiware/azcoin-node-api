@@ -51,7 +51,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         )
 
     def _is_protected(self, path: str) -> bool:
-        return any(path.startswith(prefix) for prefix in self._config.protected_path_prefixes)
+        # Match whole prefix segments only, so `/v1/tx` protects `/v1/tx/*`
+        # but does not accidentally match `/v1/tx-extra`.
+        return any(
+            path == p or path.startswith(p.rstrip("/") + "/")
+            for p in self._config.protected_path_prefixes
+        )
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path

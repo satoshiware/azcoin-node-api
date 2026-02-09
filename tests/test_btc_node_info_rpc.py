@@ -78,3 +78,35 @@ def test_btc_node_info_returns_502_on_rpc_unavailable(monkeypatch):
     assert r.status_code == 502
     body = r.json()
     assert body["detail"]["code"] == "BTC_RPC_UNAVAILABLE"
+
+
+def test_btc_node_blockchain_info_success(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import btc_node as btc_node_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        assert method == "getblockchaininfo"
+        return {"chain": "main", "blocks": 77, "headers": 80}
+
+    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get("/v1/btc/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code == 200
+    assert r.json() == {"chain": "main", "blocks": 77, "headers": 80}
+
+
+def test_btc_node_blockchain_info_returns_502_on_rpc_unavailable(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import btc_node as btc_node_module
+
+    def boom(self, method: str, params=None):  # noqa: ANN001
+        raise BitcoinRpcTransportError("network down")
+
+    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", boom, raising=True)
+
+    r = client.get("/v1/btc/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code == 502
+    body = r.json()
+    assert body["detail"]["code"] == "BTC_RPC_UNAVAILABLE"

@@ -45,3 +45,28 @@ def node_info() -> dict:
         "protocolversion": network.get("protocolversion"),
         "mempool": {"size": mempool.get("size"), "bytes": mempool.get("bytes")},
     }
+
+
+@router.get("/blockchain-info")
+def blockchain_info() -> dict:
+    settings = get_settings()
+    if not settings.btc_rpc_url or not settings.btc_rpc_user or not settings.btc_rpc_password:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "BTC_RPC_NOT_CONFIGURED", "message": "Bitcoin RPC is not configured"},
+        )
+
+    rpc = BitcoinRpcClient(
+        url=settings.btc_rpc_url,
+        user=settings.btc_rpc_user,
+        password=settings.btc_rpc_password.get_secret_value(),
+        timeout_seconds=settings.btc_rpc_timeout_seconds,
+    )
+
+    try:
+        return rpc.call("getblockchaininfo")
+    except BitcoinRpcError:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "BTC_RPC_UNAVAILABLE", "message": "Bitcoin RPC unavailable"},
+        ) from None

@@ -8,6 +8,7 @@ from node_api.logging import configure_logging
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.btc_node import router as btc_node_router
 from node_api.routes.v1.health import router as health_router
+from node_api.routes.v1.node import router as node_router
 from node_api.routes.v1.tx import send as tx_send
 from node_api.settings import get_settings
 
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
         {"name": "health", "description": "Service liveness/readiness endpoints."},
         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
+        {"name": "node", "description": "Multi-node summary endpoints (protected)."},
         {"name": "tx", "description": "Transaction endpoints (protected)."},
     ]
 
@@ -35,6 +37,7 @@ def create_app() -> FastAPI:
             protected_path_prefixes=(
                 f"{settings.api_v1_prefix}/az",
                 f"{settings.api_v1_prefix}/btc",
+                f"{settings.api_v1_prefix}/node",
                 f"{settings.api_v1_prefix}/tx",
             ),
             exempt_paths=(
@@ -54,9 +57,10 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
+    app.include_router(node_router, prefix=settings.api_v1_prefix)
 
-    # tx router already includes /v1/tx prefix
-    app.include_router(tx_send.router)
+    # Keep versioning centralized so changing API_V1_PREFIX updates all routes.
+    app.include_router(tx_send.router, prefix=settings.api_v1_prefix)
 
     return app
 

@@ -71,3 +71,35 @@ def test_node_info_returns_502_on_rpc_unavailable(monkeypatch):
     assert r.status_code in (502, 503)
     body = r.json()
     assert body["detail"]["code"] in ("AZ_RPC_UNAVAILABLE", "AZ_RPC_NOT_CONFIGURED")
+
+
+def test_node_blockchain_info_success(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_node as az_node_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        assert method == "getblockchaininfo"
+        return {"chain": "main", "blocks": 77, "headers": 80}
+
+    monkeypatch.setattr(az_node_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get("/v1/az/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code == 200
+    assert r.json() == {"chain": "main", "blocks": 77, "headers": 80}
+
+
+def test_node_blockchain_info_returns_502_on_rpc_unavailable(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_node as az_node_module
+
+    def boom(self, method: str, params=None):  # noqa: ANN001
+        raise AzcoinRpcTransportError("network down")
+
+    monkeypatch.setattr(az_node_module.AzcoinRpcClient, "call", boom, raising=True)
+
+    r = client.get("/v1/az/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code in (502, 503)
+    body = r.json()
+    assert body["detail"]["code"] in ("AZ_RPC_UNAVAILABLE", "AZ_RPC_NOT_CONFIGURED")

@@ -2,7 +2,7 @@
 
 Production-ready skeleton for **v0.1**.
 
-This repo intentionally contains **only** the API scaffolding (settings, logging, routing, auth stub, tests, and Docker). It does **not** implement real AZCoin RPC calls, money movement, or a database.
+This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic, money movement policies, or a database.
 
 ## Quickstart (local)
 
@@ -49,7 +49,7 @@ Copy `.env.example` to `.env`.
 - **BTC_RPC_PORT**: Bitcoin RPC port used by docker compose (default: `8332`)
 - **BITCOIN_CORE_IMAGE**: bitcoin core docker image used by compose (default: `bitcoin/bitcoin-core:28.0`)
 
-Protected routes (currently `/v1/az/*`) require:
+Protected routes (currently `/v1/az/*`, `/v1/btc/*`, `/v1/tx/*`) require:
 
 ```
 Authorization: Bearer <token>
@@ -78,6 +78,13 @@ Notes:
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
+- **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
+
+## Developer notes
+
+- Keep API versioning centralized via `API_V1_PREFIX`; routers should use resource-only prefixes (`/tx`, `/az`, `/btc`) and be mounted in `create_app()`.
+- Protected route enforcement is path-boundary aware: `/v1/tx/*` is protected, while similarly named paths like `/v1/tx-extra` are not implicitly matched.
+- `tx/send` maps RPC failures to stable HTTP responses: config issues (`503`), upstream transport/HTTP issues (`502`), and RPC validation/rejection errors (`400`).
 
 ## Tests
 
