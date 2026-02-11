@@ -7,6 +7,8 @@ services:
       - .env
     environment:
       # Wire API to core service inside the docker network.
+      - AUTH_MODE=dev_token
+      - AZ_API_DEV_TOKEN=local_dev_token
       - AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT:-19332}
       - AZ_RPC_USER=${AZ_RPC_USER}
       - AZ_RPC_PASSWORD=${AZ_RPC_PASSWORD}

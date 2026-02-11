@@ -7,6 +7,17 @@ from node_api.settings import get_settings
 
 router = APIRouter(prefix="/az/node", tags=["az-node"])
 
+@router.get("/_debug/settings")
+def debug_settings() -> dict:
+    s = get_settings()
+    return {
+        "az_rpc_url": s.az_rpc_url,
+        "az_rpc_user_set": bool(s.az_rpc_user),
+        "az_rpc_password_set": bool(s.az_rpc_password),
+        "az_rpc_password_len": len(s.az_rpc_password.get_secret_value()) if s.az_rpc_password else 0,
+        "auth_mode": s.auth_mode,
+    }
+
 
 @router.get("/info")
 def node_info() -> dict:
@@ -65,8 +76,9 @@ def blockchain_info() -> dict:
 
     try:
         return rpc.call("getblockchaininfo")
-    except AzcoinRpcError:
+    except AzcoinRpcError as e:
         raise HTTPException(
             status_code=502,
-            detail={"code": "AZ_RPC_UNAVAILABLE", "message": "AZCoin RPC unavailable"},
+            detail={"code": "AZ_RPC_UNAVAILABLE", "message": f"AZCoin RPC unavailable: {e}"},
         ) from None
+
