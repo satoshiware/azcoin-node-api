@@ -27,7 +27,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="AZCoin Node API",
-        version="0.1.0",
+        version="0.1.2",
         openapi_tags=openapi_tags,
     )
 
