@@ -40,6 +40,7 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_USER**: AZCoin JSON-RPC username
 - **AZ_RPC_PASSWORD**: AZCoin JSON-RPC password
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
+- **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `micro`)
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
 - **BTC_RPC_USER**: Bitcoin JSON-RPC username
 - **BTC_RPC_PASSWORD**: Bitcoin JSON-RPC password
@@ -77,8 +78,24 @@ Notes:
 
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
+- **GET** `/v1/az/node/peers` (protected; calls AZCoin `getpeerinfo` and returns normalized peer list)
+- **GET** `/v1/az/mempool/info` (protected; calls AZCoin `getmempoolinfo` and returns normalized mempool stats)
+- **GET** `/v1/az/wallet/summary` (protected; calls AZCoin wallet RPC and returns normalized balances summary)
+- **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 - **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
+
+For `/v1/az/wallet/transactions` with `since`:
+- Invalid `since` format returns `422` with `AZ_INVALID_SINCE`.
+- Unknown/not-in-chain blockhash returns `404` with `AZ_SINCE_NOT_FOUND`.
+
+For `/v1/az/wallet/transactions` results:
+- Transactions are returned newest-first (descending by `time`).
+- `limit` is applied after normalization and sorting.
+
+For AZCoin protected endpoints:
+- The API expects AZCoin RPC to run on chain `micro` by default (override with `AZ_EXPECTED_CHAIN`).
+- Chain mismatch returns `503` with `AZ_WRONG_CHAIN`.
 
 ## Developer notes
 

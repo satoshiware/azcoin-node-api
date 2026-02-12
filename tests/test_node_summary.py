@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from node_api.services.azcoin_rpc import AzcoinRpcTransportError
-from node_api.services.bitcoin_rpc import BitcoinRpcTransportError
 from node_api.settings import get_settings
 
 
@@ -93,5 +92,11 @@ def test_node_summary_degraded(monkeypatch):
     assert r.json() == {
         "status": "degraded",
         "az": {"error": {"code": "AZ_RPC_UNAVAILABLE", "message": "AZCoin RPC unavailable"}},
-        "btc": {"chain": "main", "blocks": 30, "headers": 31, "verificationprogress": None, "difficulty": None},
+        "btc": {
+            "chain": "main",
+            "blocks": 30,
+            "headers": 31,
+            "verificationprogress": None,
+            "difficulty": None,
+        },
     }

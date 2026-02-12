@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from node_api.services.azcoin_rpc import AzcoinRpcClient, AzcoinRpcError
+from node_api.services.azcoin_rpc import AzcoinRpcClient, AzcoinRpcError, AzcoinRpcWrongChainError
 from node_api.services.bitcoin_rpc import BitcoinRpcClient, BitcoinRpcError
 from node_api.settings import get_settings
 
@@ -32,10 +32,16 @@ def _fetch_az_blockchain_info() -> tuple[dict | None, dict | None]:
         user=settings.az_rpc_user,
         password=settings.az_rpc_password.get_secret_value(),
         timeout_seconds=settings.az_rpc_timeout_seconds,
+        expected_chain=settings.az_expected_chain,
     )
 
     try:
         return _trim_blockchain_info(rpc.call("getblockchaininfo")), None
+    except AzcoinRpcWrongChainError as exc:
+        return None, {
+            "code": "AZ_WRONG_CHAIN",
+            "message": f"AZCoin RPC is on the wrong chain (expected '{exc.expected_chain}').",
+        }
     except AzcoinRpcError:
         return None, {"code": "AZ_RPC_UNAVAILABLE", "message": "AZCoin RPC unavailable"}
 
