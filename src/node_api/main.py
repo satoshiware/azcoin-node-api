@@ -9,9 +9,11 @@ from node_api.routes.v1.az_mempool import router as az_mempool_router
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
+from node_api.routes.v1.events import router as events_router
 from node_api.routes.v1.health import router as health_router
 from node_api.routes.v1.node import router as node_router
 from node_api.routes.v1.tx import send as tx_send
+from node_api.services.events_bus import events_bus
 from node_api.settings import get_settings
 
 
@@ -21,6 +23,7 @@ def create_app() -> FastAPI:
 
     openapi_tags = [
         {"name": "health", "description": "Service liveness/readiness endpoints."},
+        {"name": "events", "description": "Recent event stream endpoints."},
         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},
         {"name": "az-mempool", "description": "AZCoin mempool endpoints (protected)."},
         {"name": "az-wallet", "description": "AZCoin wallet endpoints (protected)."},
@@ -58,7 +61,12 @@ def create_app() -> FastAPI:
         ),
     )
 
+    @app.on_event("startup")
+    def start_events_subscriber() -> None:
+        events_bus.start()
+
     app.include_router(health_router, prefix=settings.api_v1_prefix)
+    app.include_router(events_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)
     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)
     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)
