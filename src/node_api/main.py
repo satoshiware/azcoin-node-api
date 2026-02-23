@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 
 from node_api.auth.middleware import AuthConfig, JWTAuthMiddleware
@@ -10,16 +12,24 @@ from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
 from node_api.routes.v1.events import router as events_router
-from node_api.routes.v1.health import router as health_router
+from node_api.routes.v1.health import (
+    public_router as health_public_router,
+    router as health_router,
+)
 from node_api.routes.v1.node import router as node_router
 from node_api.routes.v1.tx import send as tx_send
+from node_api.services.event_store import EventStore
 from node_api.services.events_bus import events_bus
 from node_api.settings import get_settings
+from node_api.version import get_version
+
+store = EventStore(maxlen=int(os.getenv("AZ_ZMQ_RING_SIZE", "500")))
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(level=settings.log_level)
+    from node_api.routers.events_recent import router as events_recent_router
 
     openapi_tags = [
         {"name": "health", "description": "Service liveness/readiness endpoints."},
@@ -34,7 +44,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="AZCoin Node API",
-        version="0.1.2",
+        version=get_version(),
         openapi_tags=openapi_tags,
     )
 
@@ -63,8 +73,13 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def start_events_subscriber() -> None:
+        events_bus.bind_event_store(store)
         events_bus.start()
 
+    # NOTE: /v1/events/recent is EventStore-backed (ZMQ ingest). Keep legacy routes from
+    # defining the same path.
+    app.include_router(events_recent_router)
+    app.include_router(health_public_router)
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(events_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)

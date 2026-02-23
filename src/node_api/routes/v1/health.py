@@ -1,35 +1,32 @@
 from __future__ import annotations
 
 import os
-import tomllib
-from functools import lru_cache
-from pathlib import Path
 
 from fastapi import APIRouter
 
+from node_api.version import get_version
+
 router = APIRouter(tags=["health"])
-
-
-@lru_cache(maxsize=1)
-def _get_project_version() -> str | None:
-    for parent in Path(__file__).resolve().parents:
-        pyproject = parent / "pyproject.toml"
-        if pyproject.is_file():
-            try:
-                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            except (OSError, tomllib.TOMLDecodeError):
-                return None
-            return data.get("project", {}).get("version")
-    return None
+public_router = APIRouter(tags=["health"])
 
 
 def _get_api_version() -> str:
-    return os.environ.get("VERSION") or _get_project_version() or "unknown"
+    return get_version()
 
 
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@public_router.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok", "version": _get_api_version()}
+
+
+@public_router.get("/version")
+def version() -> dict[str, str]:
+    return {"version": _get_api_version(), "service": "azcoin-api"}
 
 
 @router.get("/health/version")
