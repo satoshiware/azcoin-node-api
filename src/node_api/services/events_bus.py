@@ -8,13 +8,18 @@ import time
 from collections import deque
 from typing import Any
 
+from node_api.services.event_store import EventStore, ZmqEvent
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TX_ZMQ_URL = "tcp://127.0.0.1:28332"
+_DEFAULT_RAWTX_ZMQ_URL = "tcp://azcoind:28334"
 _DEFAULT_RAWBLOCK_ZMQ_URL = "tcp://azcoind:28333"
 _DEFAULT_CHAIN = "micro"
 _DEFAULT_MAX_EVENTS = 2000
 _DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
+_DEFAULT_TOPICS = ("hashtx", "rawblock", "rawtx")
+_SUPPORTED_TOPICS = {"hashtx", "rawtx", "rawblock", "hashblock"}
 Subscriber = tuple[asyncio.AbstractEventLoop, asyncio.Queue[dict[str, Any]]]
 
 
@@ -29,11 +34,21 @@ class EventsBus:
         self,
         *,
         tx_zmq_url: str,
+        rawtx_zmq_url: str,
         rawblock_zmq_url: str,
+        hashblock_zmq_url: str = "",
+        chain: str = _DEFAULT_CHAIN,
+        topics: tuple[str, ...] = _DEFAULT_TOPICS,
+        event_store: EventStore | None = None,
         max_events: int = _DEFAULT_MAX_EVENTS,
     ) -> None:
         self._tx_zmq_url = tx_zmq_url
+        self._rawtx_zmq_url = rawtx_zmq_url
         self._rawblock_zmq_url = rawblock_zmq_url
+        self._hashblock_zmq_url = hashblock_zmq_url
+        self._chain = chain
+        self._topics = tuple(topic for topic in topics if topic in _SUPPORTED_TOPICS)
+        self._event_store = event_store
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._lock = threading.Lock()
         self._subscribers: list[Subscriber] = []
@@ -80,10 +95,58 @@ class EventsBus:
                 if id(subscriber_queue) != queue_id
             ]
 
+    def bind_event_store(self, store: EventStore | None) -> None:
+        with self._lock:
+            self._event_store = store
+
     def _append(self, event: dict[str, Any]) -> None:
         with self._lock:
             self._events.append(event)
+        self._push_to_event_store(event)
         self._broadcast(event)
+
+    def _push_to_event_store(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            store = self._event_store
+
+        if store is None:
+            return
+
+        ev_type = event.get("type")
+        if not isinstance(ev_type, str) or not ev_type:
+            return
+
+        chain = event.get("chain")
+        if not isinstance(chain, str) or not chain:
+            chain = self._chain
+
+        timestamp = event.get("time")
+        if not isinstance(timestamp, int):
+            timestamp = int(time.time())
+
+        seq = event.get("seq")
+        if not isinstance(seq, int):
+            seq = None
+
+        payload_hex = event.get("payload_hex")
+        if not isinstance(payload_hex, str):
+            payload_hex = ""
+
+        # Backward-compat for legacy hashtx/hashblock event shape.
+        if not payload_hex:
+            event_hash = event.get("hash")
+            if isinstance(event_hash, str):
+                payload_hex = event_hash
+
+        store.push(
+            ZmqEvent(
+                type=ev_type,
+                chain=chain,
+                time=timestamp,
+                seq=seq,
+                payload_hex=payload_hex,
+            )
+        )
 
     def _broadcast(self, event: dict[str, Any]) -> None:
         with self._lock:
@@ -127,21 +190,39 @@ class EventsBus:
             return
 
         context = zmq.Context()
-        tx_socket = context.socket(zmq.SUB)
-        tx_socket.setsockopt(zmq.SUBSCRIBE, b"hashtx")
-        tx_socket.connect(self._tx_zmq_url)
-
-        rawblock_socket = context.socket(zmq.SUB)
-        rawblock_socket.setsockopt(zmq.SUBSCRIBE, b"rawblock")
-        rawblock_socket.connect(self._rawblock_zmq_url)
-
+        sockets: list[Any] = []
+        topic_endpoints = {
+            "hashtx": self._tx_zmq_url,
+            "rawtx": self._rawtx_zmq_url,
+            "rawblock": self._rawblock_zmq_url,
+            "hashblock": self._hashblock_zmq_url,
+        }
         poller = zmq.Poller()
-        poller.register(tx_socket, zmq.POLLIN)
-        poller.register(rawblock_socket, zmq.POLLIN)
+
+        for topic in self._topics:
+            endpoint = topic_endpoints.get(topic, "")
+            if not endpoint:
+                logger.warning("Skipping ZMQ topic %s because endpoint is empty", topic)
+                continue
+
+            socket = context.socket(zmq.SUB)
+            socket.setsockopt(zmq.SUBSCRIBE, topic.encode("utf-8"))
+            socket.connect(endpoint)
+            poller.register(socket, zmq.POLLIN)
+            sockets.append(socket)
+            logger.info("Subscribed AZCoin events topic %s on %s", topic, endpoint)
+            if topic == "rawtx":
+                logger.info("AZCoin rawtx subscription is active on %s", endpoint)
+
+        if not sockets:
+            logger.warning("No AZCoin events topics configured; subscriber is idle")
+            context.term()
+            return
 
         logger.info(
-            "Starting AZCoin events subscriber on tx=%s rawblock=%s",
+            "Starting AZCoin events subscriber on hashtx=%s rawtx=%s rawblock=%s",
             self._tx_zmq_url,
+            self._rawtx_zmq_url,
             self._rawblock_zmq_url,
         )
         try:
@@ -150,26 +231,21 @@ class EventsBus:
                 if not ready_sockets:
                     continue
 
-                if tx_socket in ready_sockets:
-                    tx_event = self._normalize_event(tx_socket.recv_multipart())
-                    if tx_event is not None:
-                        self._append(tx_event)
-
-                if rawblock_socket in ready_sockets:
-                    rawblock_event = self._normalize_event(rawblock_socket.recv_multipart())
-                    if rawblock_event is not None:
-                        self._append(rawblock_event)
+                for socket in sockets:
+                    if socket not in ready_sockets:
+                        continue
+                    event = self._normalize_event(socket.recv_multipart())
+                    if event is not None:
+                        self._append(event)
         except Exception:
             logger.exception("AZCoin events subscriber stopped unexpectedly")
         finally:
-            poller.unregister(tx_socket)
-            poller.unregister(rawblock_socket)
-            tx_socket.close(0)
-            rawblock_socket.close(0)
+            for socket in sockets:
+                poller.unregister(socket)
+                socket.close(0)
             context.term()
 
-    @staticmethod
-    def _normalize_event(parts: list[bytes]) -> dict[str, Any] | None:
+    def _normalize_event(self, parts: list[bytes]) -> dict[str, Any] | None:
         if len(parts) < 2:
             return None
 
@@ -178,30 +254,92 @@ class EventsBus:
         if not isinstance(payload, (bytes, bytearray)):
             return None
 
+        seq: int | None = None
+        if len(parts) >= 3 and isinstance(parts[-1], (bytes, bytearray)) and len(parts[-1]) == 4:
+            seq = int.from_bytes(parts[-1], byteorder="little", signed=False)
+
+        timestamp = int(time.time())
         if topic == "hashtx":
             tx_hash = payload.hex()
             if not tx_hash:
                 return None
-            return {
+            event = {
                 "type": "hashtx",
                 "hash": tx_hash,
-                "chain": _DEFAULT_CHAIN,
-                "time": int(time.time()),
+                "chain": self._chain,
+                "time": timestamp,
             }
+            if seq is not None:
+                event["seq"] = seq
+            return event
+
+        if topic == "rawtx":
+            payload_hex = payload.hex()
+            if not payload_hex:
+                return None
+            event = {
+                "type": "rawtx",
+                "chain": self._chain,
+                "time": timestamp,
+                "payload_hex": payload_hex,
+            }
+            if seq is not None:
+                event["seq"] = seq
+            return event
 
         if topic == "rawblock":
             # Emit lightweight metadata only; raw block bytes are not exposed.
-            return {
+            event = {
                 "type": "rawblock",
-                "chain": _DEFAULT_CHAIN,
-                "time": int(time.time()),
+                "chain": self._chain,
+                "time": timestamp,
                 "raw_len": len(payload),
             }
+            if seq is not None:
+                event["seq"] = seq
+            return event
+
+        if topic == "hashblock":
+            block_hash = payload.hex()
+            if not block_hash:
+                return None
+            event = {
+                "type": "hashblock",
+                "hash": block_hash,
+                "chain": self._chain,
+                "time": timestamp,
+            }
+            if seq is not None:
+                event["seq"] = seq
+            return event
 
         return None
 
 
+def _env_first_nonempty(*names: str, default: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+def _parse_topics(raw_topics: str) -> tuple[str, ...]:
+    topics = [topic.strip() for topic in raw_topics.split(",") if topic.strip()]
+    if not topics:
+        return _DEFAULT_TOPICS
+    return tuple(dict.fromkeys(topics))
+
+
 events_bus = EventsBus(
-    tx_zmq_url=os.getenv("AZ_ZMQ_URL", _DEFAULT_TX_ZMQ_URL),
-    rawblock_zmq_url=os.getenv("AZ_ZMQ_RAWBLOCK_URL", _DEFAULT_RAWBLOCK_ZMQ_URL),
+    tx_zmq_url=_env_first_nonempty("AZ_ZMQ_HASHTX", "AZ_ZMQ_URL", default=_DEFAULT_TX_ZMQ_URL),
+    rawtx_zmq_url=_env_first_nonempty("AZ_ZMQ_RAWTX", default=_DEFAULT_RAWTX_ZMQ_URL),
+    rawblock_zmq_url=_env_first_nonempty(
+        "AZ_ZMQ_RAWBLOCK",
+        "AZ_ZMQ_RAWBLOCK_URL",
+        default=_DEFAULT_RAWBLOCK_ZMQ_URL,
+    ),
+    hashblock_zmq_url=_env_first_nonempty("AZ_ZMQ_HASHBLOCK", default=""),
+    chain=os.getenv("AZ_CHAIN", _DEFAULT_CHAIN),
+    topics=_parse_topics(os.getenv("AZ_ZMQ_TOPICS", ",".join(_DEFAULT_TOPICS))),
 )

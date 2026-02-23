@@ -12,10 +12,10 @@ from node_api.services.events_bus import events_bus
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-@router.get("/recent")
+@router.get("/recent-legacy")
 def recent_events(
     limit: int = Query(default=100, ge=1, le=2000),
-    event_type: Literal["hashtx", "hashblock", "rawblock"] | None = Query(
+    event_type: Literal["hashtx", "hashblock", "rawblock", "rawtx"] | None = Query(
         default=None, alias="type"
     ),
 ) -> list[dict[str, Any]]:
@@ -29,7 +29,7 @@ def _sse_data(payload: dict[str, Any]) -> str:
 @router.get("/stream")
 async def stream_events(
     request: Request,
-    event_type: Literal["hashtx", "hashblock", "rawblock"] | None = Query(
+    event_type: Literal["hashtx", "hashblock", "rawblock", "rawtx"] | None = Query(
         default=None, alias="type"
     ),
 ) -> StreamingResponse:
