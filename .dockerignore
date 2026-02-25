@@ -12,3 +12,4 @@ tests/
 *.log
 dist/
 build/
+rebuild.ps1
