@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     port: int = Field(default=8080, validation_alias="PORT")
     api_v1_prefix: str = Field(default="/v1", validation_alias="API_V1_PREFIX")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    az_share_db_path: str = Field(default="/data/shares.db", validation_alias="AZ_SHARE_DB_PATH")
+    az_node_api_token: str = Field(default="", validation_alias="AZ_NODE_API_TOKEN")
 
     # Auth (stub)
     auth_mode: Literal["dev_token", "jwt"] | None = Field(

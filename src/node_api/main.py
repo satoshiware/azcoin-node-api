@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -16,13 +18,16 @@ from node_api.routes.v1.health import (
     public_router as health_public_router,
     router as health_router,
 )
+from node_api.routes.v1.mining import router as mining_router
 from node_api.routes.v1.node import router as node_router
 from node_api.routes.v1.tx import send as tx_send
 from node_api.services.event_store import EventStore
 from node_api.services.events_bus import events_bus
+from node_api.services.share_ledger import init_ledger
 from node_api.settings import get_settings
 from node_api.version import get_version
 
+logger = logging.getLogger(__name__)
 store = EventStore(maxlen=int(os.getenv("AZ_ZMQ_RING_SIZE", "500")))
 
 
@@ -40,6 +45,7 @@ def create_app() -> FastAPI:
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
         {"name": "node", "description": "Multi-node summary endpoints (protected)."},
         {"name": "tx", "description": "Transaction endpoints (protected)."},
+        {"name": "mining", "description": "Mining share ingest and worker stats endpoints."},
     ]
 
     app = FastAPI(
@@ -73,6 +79,26 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def start_events_subscriber() -> None:
+        share_db_path = Path(settings.az_share_db_path)
+        try:
+            share_db_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            fallback_dir = Path.cwd() / ".data"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            logger.warning(
+                "Share ledger path unavailable path=%s error=%s fallback=%s",
+                share_db_path,
+                exc,
+                fallback_dir / "shares.db",
+            )
+            share_db_path = fallback_dir / "shares.db"
+        init_ledger(str(share_db_path))
+        logger.info("Share ledger initialized path=%s", share_db_path)
+        if settings.az_node_api_token:
+            logger.info("Share ingest auth enabled")
+        else:
+            logger.warning("WARNING: Share ingest auth disabled")
+
         events_bus.bind_event_store(store)
         events_bus.start()
 
@@ -87,6 +113,7 @@ def create_app() -> FastAPI:
     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
     app.include_router(node_router, prefix=settings.api_v1_prefix)
+    app.include_router(mining_router, prefix=settings.api_v1_prefix)
 
     # Keep versioning centralized so changing API_V1_PREFIX updates all routes.
     app.include_router(tx_send.router, prefix=settings.api_v1_prefix)

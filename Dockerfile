@@ -31,7 +31,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN addgroup --system app && adduser --system --ingroup app app
+RUN addgroup --system app \
+    && adduser --system --ingroup app app \
+    && mkdir -p /data \
+    && chown -R app:app /data
 
 COPY --from=builder /opt/venv /opt/venv
 COPY VERSION /app/VERSION

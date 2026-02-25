@@ -49,6 +49,8 @@ Copy `.env.example` to `.env`.
 - **AZCOIN_CORE_IMAGE**: core docker image used by compose (default: `ghcr.io/satoshiware/azcoin-node:latest`)
 - **BTC_RPC_PORT**: Bitcoin RPC port used by docker compose (default: `8332`)
 - **BITCOIN_CORE_IMAGE**: bitcoin core docker image used by compose (default: `bitcoin/bitcoin-core:28.0`)
+- **AZ_SHARE_DB_PATH**: sqlite share ledger path (default: `/data/shares.db`)
+- **AZ_NODE_API_TOKEN**: optional Bearer token used by mining ingest/worker endpoints (default: empty)
 
 Protected routes (currently `/v1/az/*`, `/v1/btc/*`, `/v1/tx/*`) require:
 
@@ -84,6 +86,9 @@ Notes:
 - **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 - **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
+- **POST** `/v1/mining/share` (token-protected when `AZ_NODE_API_TOKEN` is set; records share events in sqlite)
+- **GET** `/v1/mining/workers` (requires `AZ_NODE_API_TOKEN` Bearer token when enabled)
+- **GET** `/v1/mining/workers/{name}` (requires `AZ_NODE_API_TOKEN` Bearer token when enabled)
 
 For `/v1/az/wallet/transactions` with `since`:
 - Invalid `since` format returns `422` with `AZ_INVALID_SINCE`.
@@ -96,6 +101,29 @@ For `/v1/az/wallet/transactions` results:
 For AZCoin protected endpoints:
 - The API expects AZCoin RPC to run on chain `micro` by default (override with `AZ_EXPECTED_CHAIN`).
 - Chain mismatch returns `503` with `AZ_WRONG_CHAIN`.
+
+Mining share ingest example:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/v1/mining/share" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer testtoken-123" \
+  -d '{
+    "ts":1700000000,
+    "ts_ms":1700000000123,
+    "remote":"127.0.0.1",
+    "worker":"BenC",
+    "job_id":"job-42",
+    "difficulty":1,
+    "accepted":true,
+    "reason":null,
+    "extranonce2":"0a0b0c0d",
+    "ntime":"65a1bc2f",
+    "nonce":"deadbeef",
+    "version_bits":"20000000",
+    "accepted_unvalidated":true
+  }'
+```
 
 ## Developer notes
 
