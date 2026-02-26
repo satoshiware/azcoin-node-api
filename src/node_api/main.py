@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -23,7 +22,7 @@ from node_api.routes.v1.node import router as node_router
 from node_api.routes.v1.tx import send as tx_send
 from node_api.services.event_store import EventStore
 from node_api.services.events_bus import events_bus
-from node_api.services.share_ledger import init_ledger
+from node_api.services.share_ledger import init_db
 from node_api.settings import get_settings
 from node_api.version import get_version
 
@@ -79,21 +78,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     def start_events_subscriber() -> None:
-        share_db_path = Path(settings.az_share_db_path)
-        try:
-            share_db_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            fallback_dir = Path.cwd() / ".data"
-            fallback_dir.mkdir(parents=True, exist_ok=True)
-            logger.warning(
-                "Share ledger path unavailable path=%s error=%s fallback=%s",
-                share_db_path,
-                exc,
-                fallback_dir / "shares.db",
-            )
-            share_db_path = fallback_dir / "shares.db"
-        init_ledger(str(share_db_path))
-        logger.info("Share ledger initialized path=%s", share_db_path)
+        init_db()
+        logger.info("Share ledger initialized")
         if settings.az_node_api_token:
             logger.info("Share ingest auth enabled")
         else:

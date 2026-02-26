@@ -1,13 +1,36 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
-import time
+from pathlib import Path
 from typing import Any
 
 _WRITE_LOCK = threading.Lock()
 _CONN: sqlite3.Connection | None = None
 _DB_PATH: str | None = None
+_REQUIRED_SHARE_KEYS = (
+    "ts",
+    "worker",
+    "job_id",
+    "extranonce2",
+    "ntime",
+    "nonce",
+    "accepted",
+    "duplicate",
+    "share_diff",
+    "reason",
+)
+
+
+def _connection_factory(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _db_path() -> str:
+    return os.getenv("AZ_MINING_DB_PATH", "/data/mining.db")
 
 
 def _connection() -> sqlite3.Connection:
@@ -16,9 +39,11 @@ def _connection() -> sqlite3.Connection:
     return _CONN
 
 
-def init_ledger(db_path: str) -> None:
+def init_db() -> None:
     global _CONN, _DB_PATH
 
+    db_path = _db_path()
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     if _CONN is not None and _DB_PATH == db_path:
         return
 
@@ -31,44 +56,35 @@ def init_ledger(db_path: str) -> None:
             _CONN = None
             _DB_PATH = None
 
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
+        conn = _connection_factory(db_path)
         conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS workers(
-              name TEXT PRIMARY KEY,
-              first_seen INTEGER NOT NULL,
-              last_seen INTEGER NOT NULL,
-              accepted INTEGER NOT NULL DEFAULT 0,
-              rejected INTEGER NOT NULL DEFAULT 0,
-              dup INTEGER NOT NULL DEFAULT 0
-            );
-
             CREATE TABLE IF NOT EXISTS shares(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               ts INTEGER NOT NULL,
-              ts_ms INTEGER NOT NULL,
-              remote TEXT NOT NULL,
               worker TEXT NOT NULL,
               job_id TEXT NOT NULL,
-              difficulty INTEGER NOT NULL,
-              accepted INTEGER NOT NULL,
-              reason TEXT,
               extranonce2 TEXT NOT NULL,
               ntime TEXT NOT NULL,
               nonce TEXT NOT NULL,
-              version_bits TEXT,
-              accepted_unvalidated INTEGER NOT NULL,
-              created_at INTEGER NOT NULL
+              accepted INTEGER NOT NULL,
+              duplicate INTEGER NOT NULL,
+              share_diff REAL NOT NULL,
+              reason TEXT NOT NULL
             );
 
-            CREATE INDEX IF NOT EXISTS idx_shares_ts_ms ON shares(ts_ms);
-            CREATE INDEX IF NOT EXISTS idx_shares_worker ON shares(worker);
-            CREATE INDEX IF NOT EXISTS idx_shares_accepted ON shares(accepted);
+            CREATE TABLE IF NOT EXISTS workers(
+              worker TEXT PRIMARY KEY,
+              first_seen INTEGER NOT NULL,
+              last_seen INTEGER NOT NULL,
+              accepted INTEGER NOT NULL,
+              rejected INTEGER NOT NULL,
+              dup INTEGER NOT NULL,
+              best_share_diff REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_shares_worker_ts ON shares(worker, ts);
+            CREATE INDEX IF NOT EXISTS idx_shares_ts ON shares(ts);
             """
         )
         conn.commit()
@@ -77,91 +93,111 @@ def init_ledger(db_path: str) -> None:
         _DB_PATH = db_path
 
 
-def record_share(event: dict[str, Any]) -> None:
+def ingest_share(payload: dict[str, Any]) -> None:
+    missing_keys = [key for key in _REQUIRED_SHARE_KEYS if key not in payload]
+    if missing_keys:
+        missing = ", ".join(missing_keys)
+        raise ValueError(f"Missing required share keys: {missing}")
+
     conn = _connection()
 
-    accepted = 1 if bool(event["accepted"]) else 0
+    ts = int(payload["ts"])
+    worker = str(payload["worker"])
+    accepted = 1 if bool(payload["accepted"]) else 0
     rejected = 0 if accepted else 1
-    is_duplicate = 1 if (event.get("reason") or "").lower() == "duplicate" else 0
-    now_ts = int(time.time())
-    worker = str(event["worker"])
-    share_ts = int(event["ts"])
+    duplicate = 1 if bool(payload["duplicate"]) else 0
+    share_diff = float(payload["share_diff"])
+    reason = "" if payload["reason"] is None else str(payload["reason"])
 
     with _WRITE_LOCK:
-        conn.execute(
-            """
-            INSERT INTO shares(
-              ts, ts_ms, remote, worker, job_id, difficulty, accepted, reason,
-              extranonce2, ntime, nonce, version_bits, accepted_unvalidated, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                share_ts,
-                int(event["ts_ms"]),
-                str(event["remote"]),
-                worker,
-                str(event["job_id"]),
-                int(event.get("difficulty", 1)),
-                accepted,
-                event.get("reason"),
-                str(event["extranonce2"]),
-                str(event["ntime"]),
-                str(event["nonce"]),
-                event.get("version_bits"),
-                1 if bool(event.get("accepted_unvalidated", True)) else 0,
-                now_ts,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO workers(name, first_seen, last_seen, accepted, rejected, dup)
-            VALUES(?, ?, ?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-              last_seen = excluded.last_seen,
-              accepted = workers.accepted + ?,
-              rejected = workers.rejected + ?,
-              dup = workers.dup + ?
-            """,
-            (
-                worker,
-                share_ts,
-                share_ts,
-                accepted,
-                rejected,
-                is_duplicate,
-                accepted,
-                rejected,
-                is_duplicate,
-            ),
-        )
-        conn.commit()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO shares(
+                  ts, worker, job_id, extranonce2, ntime, nonce,
+                  accepted, duplicate, share_diff, reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ts,
+                    worker,
+                    str(payload["job_id"]),
+                    str(payload["extranonce2"]),
+                    str(payload["ntime"]),
+                    str(payload["nonce"]),
+                    accepted,
+                    duplicate,
+                    share_diff,
+                    reason,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO workers(
+                  worker, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker) DO UPDATE SET
+                  last_seen = MAX(workers.last_seen, excluded.last_seen),
+                  accepted = workers.accepted + excluded.accepted,
+                  rejected = workers.rejected + excluded.rejected,
+                  dup = workers.dup + excluded.dup,
+                  best_share_diff = MAX(workers.best_share_diff, excluded.best_share_diff)
+                """,
+                (
+                    worker,
+                    ts,
+                    ts,
+                    accepted,
+                    rejected,
+                    duplicate,
+                    share_diff,
+                ),
+            )
 
 
-def list_workers(limit: int = 1000) -> list[dict[str, Any]]:
+def list_workers() -> list[dict[str, Any]]:
     conn = _connection()
-    safe_limit = max(1, min(int(limit), 5000))
-    rows = conn.execute(
-        """
-        SELECT name, first_seen, last_seen, accepted, rejected, dup
-        FROM workers
-        ORDER BY last_seen DESC, name ASC
-        LIMIT ?
-        """,
-        (safe_limit,),
-    ).fetchall()
+
+    with _WRITE_LOCK:
+        rows = conn.execute(
+            """
+            SELECT worker AS name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+            FROM workers
+            ORDER BY last_seen DESC, worker ASC
+            """
+        ).fetchall()
+
     return [dict(row) for row in rows]
 
 
-def get_worker(name: str) -> dict[str, Any] | None:
+def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | None:
     conn = _connection()
-    row = conn.execute(
-        """
-        SELECT name, first_seen, last_seen, accepted, rejected, dup
-        FROM workers
-        WHERE name = ?
-        """,
-        (name,),
-    ).fetchone()
-    if row is None:
-        return None
-    return dict(row)
+
+    with _WRITE_LOCK:
+        row = conn.execute(
+            """
+            SELECT worker AS name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+            FROM workers
+            WHERE worker = ?
+            """,
+            (worker,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        item: dict[str, Any] = dict(row)
+        if include_recent:
+            recent_rows = conn.execute(
+                """
+                SELECT id, ts, worker, job_id, extranonce2, ntime, nonce,
+                       accepted, duplicate, share_diff, reason
+                FROM shares
+                WHERE worker = ?
+                ORDER BY ts DESC, id DESC
+                LIMIT 50
+                """,
+                (worker,),
+            ).fetchall()
+            item["recent_shares"] = [dict(recent_row) for recent_row in recent_rows]
+
+    return item
