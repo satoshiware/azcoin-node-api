@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from node_api.services.azcoin_rpc import AzcoinRpcClient, AzcoinRpcError, AzcoinRpcWrongChainError
-from node_api.services.bitcoin_rpc import BitcoinRpcClient, BitcoinRpcError
+from node_api.services.bitcoin_rpc import BitcoinRPC, BitcoinRpcError
 from node_api.settings import get_settings
 
 router = APIRouter(prefix="/node", tags=["node"])
@@ -54,7 +54,7 @@ def _fetch_btc_blockchain_info() -> tuple[dict | None, dict | None]:
             "message": "Bitcoin RPC is not configured",
         }
 
-    rpc = BitcoinRpcClient(
+    rpc = BitcoinRPC(
         url=settings.btc_rpc_url,
         user=settings.btc_rpc_user,
         password=settings.btc_rpc_password.get_secret_value(),
@@ -62,7 +62,7 @@ def _fetch_btc_blockchain_info() -> tuple[dict | None, dict | None]:
     )
 
     try:
-        return _trim_blockchain_info(rpc.call("getblockchaininfo")), None
+        return _trim_blockchain_info(rpc.call_dict("getblockchaininfo")), None
     except BitcoinRpcError:
         return None, {"code": "BTC_RPC_UNAVAILABLE", "message": "Bitcoin RPC unavailable"}
 

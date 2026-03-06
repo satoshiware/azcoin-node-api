@@ -2,37 +2,25 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from node_api.services.bitcoin_rpc import BitcoinRpcClient, BitcoinRpcError
-from node_api.settings import get_settings
+from node_api.services.bitcoin_rpc import BitcoinRpcError
+from node_api.services.btc_route_helpers import (
+    get_btc_rpc,
+    normalize_peer,
+    raise_btc_unavailable,
+)
 
 router = APIRouter(prefix="/btc/node", tags=["btc-node"])
 
 
 @router.get("/info")
 def node_info() -> dict:
-    settings = get_settings()
-    if not settings.btc_rpc_url or not settings.btc_rpc_user or not settings.btc_rpc_password:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "BTC_RPC_NOT_CONFIGURED", "message": "Bitcoin RPC is not configured"},
-        )
-
-    rpc = BitcoinRpcClient(
-        url=settings.btc_rpc_url,
-        user=settings.btc_rpc_user,
-        password=settings.btc_rpc_password.get_secret_value(),
-        timeout_seconds=settings.btc_rpc_timeout_seconds,
-    )
-
+    rpc = get_btc_rpc()
     try:
-        blockchain = rpc.call("getblockchaininfo")
-        network = rpc.call("getnetworkinfo")
-        mempool = rpc.call("getmempoolinfo")
+        blockchain = rpc.call_dict("getblockchaininfo")
+        network = rpc.call_dict("getnetworkinfo")
+        mempool = rpc.call_dict("getmempoolinfo")
     except BitcoinRpcError:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": "BTC_RPC_UNAVAILABLE", "message": "Bitcoin RPC unavailable"},
-        ) from None
+        raise_btc_unavailable()
 
     return {
         "chain": blockchain.get("chain"),
@@ -49,24 +37,22 @@ def node_info() -> dict:
 
 @router.get("/blockchain-info")
 def blockchain_info() -> dict:
-    settings = get_settings()
-    if not settings.btc_rpc_url or not settings.btc_rpc_user or not settings.btc_rpc_password:
-        raise HTTPException(
-            status_code=503,
-            detail={"code": "BTC_RPC_NOT_CONFIGURED", "message": "Bitcoin RPC is not configured"},
-        )
-
-    rpc = BitcoinRpcClient(
-        url=settings.btc_rpc_url,
-        user=settings.btc_rpc_user,
-        password=settings.btc_rpc_password.get_secret_value(),
-        timeout_seconds=settings.btc_rpc_timeout_seconds,
-    )
-
+    rpc = get_btc_rpc()
     try:
-        return rpc.call("getblockchaininfo")
+        return rpc.call_dict("getblockchaininfo")
     except BitcoinRpcError:
-        raise HTTPException(
-            status_code=502,
-            detail={"code": "BTC_RPC_UNAVAILABLE", "message": "Bitcoin RPC unavailable"},
-        ) from None
+        raise_btc_unavailable()
+
+
+@router.get("/peers")
+def node_peers() -> list[dict]:
+    rpc = get_btc_rpc()
+    try:
+        peers = rpc.call("getpeerinfo")
+    except BitcoinRpcError:
+        raise_btc_unavailable()
+
+    if not isinstance(peers, list):
+        raise_btc_unavailable()
+
+    return [normalize_peer(peer) for peer in peers if isinstance(peer, dict)]

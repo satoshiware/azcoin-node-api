@@ -12,6 +12,7 @@ from node_api.routes.v1.az_mempool import router as az_mempool_router
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
+from node_api.routes.v1.btc_wallet import router as btc_wallet_router
 from node_api.routes.v1.events import router as events_router
 from node_api.routes.v1.health import (
     public_router as health_public_router,
@@ -42,6 +43,7 @@ def create_app() -> FastAPI:
         {"name": "az-mempool", "description": "AZCoin mempool endpoints (protected)."},
         {"name": "az-wallet", "description": "AZCoin wallet endpoints (protected)."},
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
+        {"name": "btc-wallet", "description": "Bitcoin wallet endpoints (protected)."},
         {"name": "node", "description": "Multi-node summary endpoints (protected)."},
         {"name": "tx", "description": "Transaction endpoints (protected)."},
         {"name": "mining", "description": "Mining share ingest and worker stats endpoints."},
@@ -98,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)
     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
+    app.include_router(btc_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(node_router, prefix=settings.api_v1_prefix)
     app.include_router(mining_router, prefix=settings.api_v1_prefix)
 
