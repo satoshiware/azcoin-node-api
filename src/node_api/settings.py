@@ -44,6 +44,9 @@ class Settings(BaseSettings):
 
     # Bitcoin RPC (used by `/v1/btc/*`)
     btc_rpc_url: str | None = Field(default=None, validation_alias="BTC_RPC_URL")
+    btc_rpc_cookie_file: str | None = Field(
+        default=None, validation_alias="BTC_RPC_COOKIE_FILE"
+    )
     btc_rpc_user: str | None = Field(default=None, validation_alias="BTC_RPC_USER")
     btc_rpc_password: SecretStr | None = Field(
         default=None, validation_alias="BTC_RPC_PASSWORD", repr=False

@@ -4,24 +4,43 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from node_api.services.bitcoin_rpc import BitcoinRPC, BitcoinRpcResponseError
+from node_api.services.bitcoin_rpc import (
+    BitcoinRPC,
+    BitcoinRpcResponseError,
+    BitcoinRpcTransportError,
+)
 from node_api.settings import get_settings
 
 
-def get_btc_rpc() -> BitcoinRPC:
-    """Return configured Bitcoin RPC client or raise BTC_RPC_NOT_CONFIGURED."""
+def _btc_rpc_configured() -> bool:
+    """True if Bitcoin RPC has URL and either cookie file or user/password."""
     settings = get_settings()
-    if not settings.btc_rpc_url or not settings.btc_rpc_user or not settings.btc_rpc_password:
+    if not settings.btc_rpc_url:
+        return False
+    if settings.btc_rpc_cookie_file:
+        return True
+    return bool(settings.btc_rpc_user and settings.btc_rpc_password)
+
+
+def get_btc_rpc() -> BitcoinRPC:
+    """Return configured Bitcoin RPC client or raise BTC_RPC_NOT_CONFIGURED / BTC_RPC_UNAVAILABLE."""
+    if not _btc_rpc_configured():
         raise HTTPException(
             status_code=503,
             detail={"code": "BTC_RPC_NOT_CONFIGURED", "message": "Bitcoin RPC is not configured"},
         )
-    return BitcoinRPC(
-        url=settings.btc_rpc_url,
-        user=settings.btc_rpc_user,
-        password=settings.btc_rpc_password.get_secret_value(),
-        timeout_seconds=settings.btc_rpc_timeout_seconds,
-    )
+    try:
+        return BitcoinRPC.from_settings()
+    except BitcoinRpcResponseError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "BTC_RPC_NOT_CONFIGURED", "message": str(e.message)},
+        ) from e
+    except BitcoinRpcTransportError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "BTC_RPC_UNAVAILABLE", "message": str(e.message)},
+        ) from e
 
 
 def raise_btc_not_configured() -> None:

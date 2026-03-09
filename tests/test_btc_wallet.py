@@ -24,6 +24,7 @@ def _make_client(monkeypatch) -> TestClient:
 
 def test_btc_rpc_not_configured_returns_503(monkeypatch):
     monkeypatch.delenv("BTC_RPC_URL", raising=False)
+    monkeypatch.delenv("BTC_RPC_COOKIE_FILE", raising=False)
     monkeypatch.delenv("BTC_RPC_USER", raising=False)
     monkeypatch.delenv("BTC_RPC_PASSWORD", raising=False)
     monkeypatch.setenv("APP_ENV", "dev")

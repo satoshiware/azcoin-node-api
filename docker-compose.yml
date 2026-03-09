@@ -10,11 +10,13 @@ services:
       - AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT:-19332}
       - AZ_RPC_USER=${AZ_RPC_USER}
       - AZ_RPC_PASSWORD=${AZ_RPC_PASSWORD}
+      # Bitcoin RPC: cookie auth (preferred); fallback to user/pass for remote nodes.
       - BTC_RPC_URL=http://bitcoin-core:${BTC_RPC_PORT:-8332}
-      - BTC_RPC_USER=${BTC_RPC_USER}
-      - BTC_RPC_PASSWORD=${BTC_RPC_PASSWORD}
+      - BTC_RPC_COOKIE_FILE=/run/bitcoin-rpc/.cookie
     ports:
       - "8080:8080"
+    volumes:
+      - bitcoin_rpc_cookie:/run/bitcoin-rpc:ro
     restart: unless-stopped
     networks:
       - aznet
@@ -72,26 +74,25 @@ services:
       - aznet
     environment:
       - BTC_RPC_PORT=${BTC_RPC_PORT:-8332}
-      - BTC_RPC_USER=${BTC_RPC_USER}
-      - BTC_RPC_PASSWORD=${BTC_RPC_PASSWORD}
     volumes:
       - bitcoin-core-data:/data
+      - bitcoin_rpc_cookie:/run/bitcoin-rpc
     command:
       - "-datadir=/data"
       - "-printtoconsole"
       - "-server=1"
       - "-rpcbind=0.0.0.0"
+      # Restrict to typical docker network subnets; tighten for production.
       - "-rpcallowip=172.16.0.0/12"
       - "-rpcallowip=192.168.0.0/16"
       - "-rpcallowip=10.0.0.0/8"
-      - "-rpcuser=${BTC_RPC_USER}"
-      - "-rpcpassword=${BTC_RPC_PASSWORD}"
+      - "-rpccookiefile=/run/bitcoin-rpc/.cookie"
       - "-rpcport=${BTC_RPC_PORT:-8332}"
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "if command -v bitcoin-cli >/dev/null 2>&1; then bitcoin-cli -datadir=/data -rpcconnect=127.0.0.1 -rpcport=$${BTC_RPC_PORT:-8332} -rpcuser=$${BTC_RPC_USER} -rpcpassword=$${BTC_RPC_PASSWORD} getblockchaininfo >/dev/null 2>&1; elif command -v curl >/dev/null 2>&1; then curl -sf -u \"$${BTC_RPC_USER}:$${BTC_RPC_PASSWORD}\" -H 'content-type: text/plain;' --data-binary '{\"jsonrpc\":\"1.0\",\"id\":\"hc\",\"method\":\"getblockchaininfo\",\"params\":[]}' http://127.0.0.1:$${BTC_RPC_PORT:-8332}/ >/dev/null; else exit 1; fi",
+          "if command -v bitcoin-cli >/dev/null 2>&1; then bitcoin-cli -datadir=/data -rpcconnect=127.0.0.1 -rpcport=$${BTC_RPC_PORT:-8332} -rpccookiefile=/run/bitcoin-rpc/.cookie getblockchaininfo >/dev/null 2>&1; elif command -v curl >/dev/null 2>&1; then COOKIE=$$(cat /run/bitcoin-rpc/.cookie 2>/dev/null) && curl -sf -u \"$$COOKIE\" -H 'content-type: text/plain;' --data-binary '{\"jsonrpc\":\"1.0\",\"id\":\"hc\",\"method\":\"getblockchaininfo\",\"params\":[]}' http://127.0.0.1:$${BTC_RPC_PORT:-8332}/ >/dev/null; else exit 1; fi",
         ]
       interval: 10s
       timeout: 5s
@@ -104,3 +105,4 @@ networks:
 volumes:
   azcoin-core-data:
   bitcoin-core-data:
+  bitcoin_rpc_cookie:

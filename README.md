@@ -42,8 +42,8 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
 - **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `micro`)
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
-- **BTC_RPC_USER**: Bitcoin JSON-RPC username
-- **BTC_RPC_PASSWORD**: Bitcoin JSON-RPC password
+- **BTC_RPC_COOKIE_FILE**: Path to Bitcoin RPC cookie file (preferred; used when same-stack with bitcoind)
+- **BTC_RPC_USER** / **BTC_RPC_PASSWORD**: Fallback for remote or non-shared-filesystem deployments
 - **BTC_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
 - **AZ_RPC_PORT**: RPC port used by docker compose (default: `19332`)
 - **AZCOIN_CORE_IMAGE**: core docker image used by compose (default: `ghcr.io/satoshiware/azcoin-node:latest`)
@@ -74,7 +74,7 @@ Service name in compose: `azcoin-api`
 Notes:
 - `docker-compose.yml` starts `azcoin-core` on the external network `aznet` and wires the API to it via `AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT}`.
 - The core RPC port is **not** published to the host; it is only reachable inside `aznet`.
-- `docker-compose.yml` also starts `bitcoin-core` and wires the API to it via `BTC_RPC_URL=http://bitcoin-core:${BTC_RPC_PORT}`.
+- `docker-compose.yml` also starts `bitcoin-core` and wires the API via `BTC_RPC_URL` and `BTC_RPC_COOKIE_FILE` (cookie auth; no manual password copying).
 
 ## API endpoints (v0.1)
 

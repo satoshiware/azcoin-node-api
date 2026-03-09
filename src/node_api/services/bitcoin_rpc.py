@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from node_api.settings import get_settings
+
+
+def _parse_cookie_file(path: str) -> tuple[str, str]:
+    """Read Bitcoin RPC cookie file and return (username, password)."""
+    p = Path(path)
+    if not p.exists():
+        raise BitcoinRpcTransportError(f"Bitcoin RPC cookie file not found: {path}")
+    try:
+        raw = p.read_text(encoding="utf-8").strip()
+    except OSError as e:
+        raise BitcoinRpcTransportError(f"Cannot read Bitcoin RPC cookie file: {e}") from e
+    if not raw:
+        raise BitcoinRpcTransportError("Bitcoin RPC cookie file is empty")
+    parts = raw.split(":", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise BitcoinRpcTransportError("Bitcoin RPC cookie file malformed (expected username:password)")
+    return parts[0], parts[1]
 
 
 class BitcoinRpcError(Exception):
@@ -50,12 +68,21 @@ class BitcoinRPC:
     @classmethod
     def from_settings(cls) -> "BitcoinRPC":
         settings = get_settings()
-        if not settings.btc_rpc_url or not settings.btc_rpc_user or not settings.btc_rpc_password:
+        if not settings.btc_rpc_url:
             raise BitcoinRpcResponseError(code=None, message="Bitcoin RPC is not configured")
+
+        if settings.btc_rpc_cookie_file:
+            user, password = _parse_cookie_file(settings.btc_rpc_cookie_file)
+        elif settings.btc_rpc_user and settings.btc_rpc_password:
+            user = settings.btc_rpc_user
+            password = settings.btc_rpc_password.get_secret_value()
+        else:
+            raise BitcoinRpcResponseError(code=None, message="Bitcoin RPC is not configured")
+
         return cls(
             url=settings.btc_rpc_url,
-            user=settings.btc_rpc_user,
-            password=settings.btc_rpc_password.get_secret_value(),
+            user=user,
+            password=password,
             timeout_seconds=settings.btc_rpc_timeout_seconds,
         )
 
