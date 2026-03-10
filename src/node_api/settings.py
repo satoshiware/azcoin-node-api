@@ -40,7 +40,7 @@ class Settings(BaseSettings):
         default=None, validation_alias="AZ_RPC_PASSWORD", repr=False
     )
     az_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="AZ_RPC_TIMEOUT_SECONDS")
-    az_expected_chain: str = Field(default="micro", validation_alias="AZ_EXPECTED_CHAIN")
+    az_expected_chain: str = Field(default="main", validation_alias="AZ_EXPECTED_CHAIN")
 
     # Bitcoin RPC (used by `/v1/btc/*`)
     btc_rpc_url: str | None = Field(default=None, validation_alias="BTC_RPC_URL")

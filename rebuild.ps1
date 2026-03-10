@@ -1,9 +1,10 @@
 git status
 git add -A
 git commit -m "Creating latest Release v0.1.4"
-git tag v0.1.4-r1 -m "v0.1.4 revsion 1"
+git tag v0.1.4-r2
+ -m "v0.1.4 revsion 2"
 git push origin main
-git push origin v0.1.4-r1
+git push origin v0.1.4-r2
 
 $SHA = (git rev-parse --short HEAD).Trim()
 

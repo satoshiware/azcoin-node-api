@@ -40,7 +40,7 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_USER**: AZCoin JSON-RPC username
 - **AZ_RPC_PASSWORD**: AZCoin JSON-RPC password
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
-- **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `micro`)
+- **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `main`)
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
 - **BTC_RPC_COOKIE_FILE**: Path to Bitcoin RPC cookie file (preferred; used when same-stack with bitcoind)
 - **BTC_RPC_USER** / **BTC_RPC_PASSWORD**: Fallback for remote or non-shared-filesystem deployments
@@ -99,7 +99,7 @@ For `/v1/az/wallet/transactions` results:
 - `limit` is applied after normalization and sorting.
 
 For AZCoin protected endpoints:
-- The API expects AZCoin RPC to run on chain `micro` by default (override with `AZ_EXPECTED_CHAIN`).
+- The API expects AZCoin RPC to run on chain `main` by default (override with `AZ_EXPECTED_CHAIN`).
 - Chain mismatch returns `503` with `AZ_WRONG_CHAIN`.
 
 Mining share ingest example:

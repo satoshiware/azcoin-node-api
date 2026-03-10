@@ -41,7 +41,7 @@ class AzcoinRpcClient:
         user: str,
         password: str,
         timeout_seconds: float = 5.0,
-        expected_chain: str = "micro",
+        expected_chain: str = "main",
     ) -> None:
         self._url = url.rstrip("/")
         self._auth = (user, password)

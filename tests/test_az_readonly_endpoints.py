@@ -38,7 +38,7 @@ def _make_client(monkeypatch) -> TestClient:
     monkeypatch.setenv("AZ_RPC_URL", "http://127.0.0.1:19332")
     monkeypatch.setenv("AZ_RPC_USER", "user")
     monkeypatch.setenv("AZ_RPC_PASSWORD", "pass")
-    monkeypatch.setenv("AZ_EXPECTED_CHAIN", "micro")
+    monkeypatch.setenv("AZ_EXPECTED_CHAIN", "main")
     get_settings.cache_clear()
 
     from node_api import main as main_module
@@ -170,7 +170,7 @@ def test_az_chain_guardrail_returns_503_on_wrong_chain(monkeypatch):
         assert params in (None, [])
         calls.append(method)
         if method == "getblockchaininfo":
-            return {"chain": "main"}
+            return {"chain": "regtest"}
         raise AssertionError(f"unexpected method: {method}")
 
     monkeypatch.setattr(az_mempool_module.AzcoinRpcClient, "_call_raw", fake_raw, raising=True)
@@ -180,7 +180,7 @@ def test_az_chain_guardrail_returns_503_on_wrong_chain(monkeypatch):
     assert r.json() == {
         "detail": {
             "code": "AZ_WRONG_CHAIN",
-            "message": "AZCoin RPC is on the wrong chain (expected 'micro').",
+            "message": "AZCoin RPC is on the wrong chain (expected 'main').",
         }
     }
     assert calls == ["getblockchaininfo"]
@@ -197,7 +197,7 @@ def test_az_chain_guardrail_passes_on_expected_chain(monkeypatch):
         assert params in (None, [])
         calls.append(method)
         if method == "getblockchaininfo":
-            return {"chain": "micro"}
+            return {"chain": "main"}
         if method == "getmempoolinfo":
             return {
                 "size": 4,

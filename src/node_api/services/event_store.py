@@ -9,7 +9,7 @@ from typing import Any, Deque, Dict, List, Optional
 @dataclass(frozen=True)
 class ZmqEvent:
     type: str          # rawtx, rawblock, hashtx, hashblock
-    chain: str         # micro
+    chain: str         # main, regtest, etc.
     time: int          # unix seconds
     seq: Optional[int] # optional sequence
     payload_hex: str   # raw bytes as hex (or hash bytes as hex)
