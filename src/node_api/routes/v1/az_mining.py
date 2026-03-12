@@ -123,7 +123,7 @@ def template_current() -> MiningTemplateResponse:
     rpc = _get_az_rpc()
 
     try:
-        raw = rpc.call("getblocktemplate", [{}])
+        raw = rpc.call("getblocktemplate", [{"rules": ["segwit"]}])
     except AzcoinRpcWrongChainError as exc:
         _raise_wrong_chain(exc.expected_chain)
     except AzcoinRpcError:
@@ -209,7 +209,7 @@ def mining_status() -> dict[str, Any]:
     # Check if template fetch works
     template_ok = False
     try:
-        raw = rpc.call("getblocktemplate", [{}])
+        raw = rpc.call("getblocktemplate", [{"rules": ["segwit"]}])
         if isinstance(raw, dict) and raw.get("previousblockhash") and raw.get("height") is not None:
             template_ok = True
     except AzcoinRpcError:
