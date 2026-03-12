@@ -81,6 +81,8 @@ Notes:
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
 - **GET** `/v1/az/node/peers` (protected; calls AZCoin `getpeerinfo` and returns normalized peer list)
+- **GET** `/v1/az/mining/template/current` (protected; calls AZCoin `getblocktemplate` and returns minimal pool DTO: job_id, prev_hash, version, nbits, ntime, clean_jobs, height)
+- **GET** `/v1/az/mining/status` (protected; returns RPC connectivity, chain/blocks/headers, and template fetch health)
 - **GET** `/v1/az/mempool/info` (protected; calls AZCoin `getmempoolinfo` and returns normalized mempool stats)
 - **GET** `/v1/az/wallet/summary` (protected; calls AZCoin wallet RPC and returns normalized balances summary)
 - **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)

@@ -9,6 +9,7 @@ from node_api.auth.middleware import AuthConfig, JWTAuthMiddleware
 from node_api.auth.validator import RejectAllValidator, StaticTokenValidator
 from node_api.logging import configure_logging
 from node_api.routes.v1.az_mempool import router as az_mempool_router
+from node_api.routes.v1.az_mining import router as az_mining_router
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
         {"name": "health", "description": "Service liveness/readiness endpoints."},
         {"name": "events", "description": "Recent event stream endpoints."},
         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},
+        {"name": "az-mining", "description": "AZCoin mining template and status endpoints (protected)."},
         {"name": "az-mempool", "description": "AZCoin mempool endpoints (protected)."},
         {"name": "az-wallet", "description": "AZCoin wallet endpoints (protected)."},
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
@@ -97,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(events_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)
+    app.include_router(az_mining_router, prefix=settings.api_v1_prefix)
     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)
     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
