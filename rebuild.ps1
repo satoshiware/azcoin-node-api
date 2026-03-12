@@ -2,7 +2,6 @@ git status
 git add -A
 git commit -m "Creating latest v0.1.4"
 git tag v0.1.4-r3
- -m "v0.1.4 revsion 3"
 git push origin main
 git push origin v0.1.4-r3
 
