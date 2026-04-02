@@ -61,6 +61,12 @@ class ShareEvent(BaseModel):
     duplicate: bool
     share_diff: float
     reason: str = ""
+    ts_ms: int | None = None
+    remote: str = ""
+    difficulty: int = 0
+    version_bits: str | None = None
+    accepted_unvalidated: int | None = None
+    created_at: int | None = None
 
     @field_validator("extranonce2", "ntime", "nonce")
     @classmethod

@@ -48,26 +48,28 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         existing[table] = {row["name"] for row in rows}
 
     migrations: list[str] = []
-    if "ts_ms" not in existing.get("shares", set()):
-        migrations.append(
-            "ALTER TABLE shares ADD COLUMN ts_ms INTEGER NOT NULL DEFAULT 0"
-        )
-    if "duplicate" not in existing.get("shares", set()):
-        migrations.append(
-            "ALTER TABLE shares ADD COLUMN duplicate INTEGER NOT NULL DEFAULT 0"
-        )
-    if "share_diff" not in existing.get("shares", set()):
-        migrations.append(
-            "ALTER TABLE shares ADD COLUMN share_diff REAL NOT NULL DEFAULT 0.0"
-        )
-    if "dup" not in existing.get("workers", set()):
-        migrations.append(
-            "ALTER TABLE workers ADD COLUMN dup INTEGER NOT NULL DEFAULT 0"
-        )
-    if "best_share_diff" not in existing.get("workers", set()):
-        migrations.append(
-            "ALTER TABLE workers ADD COLUMN best_share_diff REAL NOT NULL DEFAULT 0.0"
-        )
+
+    shares_cols = existing.get("shares", set())
+    for col, typedef in (
+        ("ts_ms", "INTEGER NOT NULL DEFAULT 0"),
+        ("remote", "TEXT NOT NULL DEFAULT ''"),
+        ("difficulty", "INTEGER NOT NULL DEFAULT 0"),
+        ("version_bits", "TEXT"),
+        ("accepted_unvalidated", "INTEGER NOT NULL DEFAULT 0"),
+        ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+        ("duplicate", "INTEGER NOT NULL DEFAULT 0"),
+        ("share_diff", "REAL NOT NULL DEFAULT 0.0"),
+    ):
+        if col not in shares_cols:
+            migrations.append(f"ALTER TABLE shares ADD COLUMN {col} {typedef}")
+
+    workers_cols = existing.get("workers", set())
+    for col, typedef in (
+        ("dup", "INTEGER NOT NULL DEFAULT 0"),
+        ("best_share_diff", "REAL NOT NULL DEFAULT 0.0"),
+    ):
+        if col not in workers_cols:
+            migrations.append(f"ALTER TABLE workers ADD COLUMN {col} {typedef}")
 
     for stmt in migrations:
         conn.execute(stmt)
@@ -97,25 +99,30 @@ def init_db() -> None:
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               ts INTEGER NOT NULL,
               ts_ms INTEGER NOT NULL DEFAULT 0,
+              remote TEXT NOT NULL DEFAULT '',
               worker TEXT NOT NULL,
               job_id TEXT NOT NULL,
+              difficulty INTEGER NOT NULL DEFAULT 0,
+              accepted INTEGER NOT NULL,
+              reason TEXT,
               extranonce2 TEXT NOT NULL,
               ntime TEXT NOT NULL,
               nonce TEXT NOT NULL,
-              accepted INTEGER NOT NULL,
-              duplicate INTEGER NOT NULL,
-              share_diff REAL NOT NULL,
-              reason TEXT NOT NULL
+              version_bits TEXT,
+              accepted_unvalidated INTEGER NOT NULL DEFAULT 0,
+              created_at INTEGER NOT NULL DEFAULT 0,
+              duplicate INTEGER NOT NULL DEFAULT 0,
+              share_diff REAL NOT NULL DEFAULT 0.0
             );
 
             CREATE TABLE IF NOT EXISTS workers(
-              worker TEXT PRIMARY KEY,
+              name TEXT PRIMARY KEY,
               first_seen INTEGER NOT NULL,
               last_seen INTEGER NOT NULL,
-              accepted INTEGER NOT NULL,
-              rejected INTEGER NOT NULL,
-              dup INTEGER NOT NULL,
-              best_share_diff REAL NOT NULL
+              accepted INTEGER NOT NULL DEFAULT 0,
+              rejected INTEGER NOT NULL DEFAULT 0,
+              dup INTEGER NOT NULL DEFAULT 0,
+              best_share_diff REAL NOT NULL DEFAULT 0.0
             );
 
             CREATE INDEX IF NOT EXISTS idx_shares_worker_ts ON shares(worker, ts);
@@ -161,34 +168,46 @@ def ingest_share(payload: dict[str, Any]) -> None:
 
     with _WRITE_LOCK:
         with conn:
-            ts_ms = int(payload.get("ts_ms", ts * 1000))
+            ts_ms = int(payload["ts_ms"]) if payload.get("ts_ms") is not None else ts * 1000
+            remote = str(payload.get("remote") or "")
+            difficulty = int(payload["difficulty"]) if payload.get("difficulty") is not None else 0
+            version_bits = payload.get("version_bits")
+            accepted_unvalidated = int(payload["accepted_unvalidated"]) if payload.get("accepted_unvalidated") is not None else accepted
+            created_at = int(payload["created_at"]) if payload.get("created_at") is not None else ts
             conn.execute(
                 """
                 INSERT INTO shares(
-                  ts, ts_ms, worker, job_id, extranonce2, ntime, nonce,
-                  accepted, duplicate, share_diff, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ts, ts_ms, remote, worker, job_id, difficulty,
+                  accepted, reason, extranonce2, ntime, nonce,
+                  version_bits, accepted_unvalidated, created_at,
+                  duplicate, share_diff
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
                     ts_ms,
+                    remote,
                     worker,
                     str(payload["job_id"]),
+                    difficulty,
+                    accepted,
+                    reason,
                     str(payload["extranonce2"]),
                     str(payload["ntime"]),
                     str(payload["nonce"]),
-                    accepted,
+                    version_bits,
+                    accepted_unvalidated,
+                    created_at,
                     duplicate,
                     share_diff,
-                    reason,
                 ),
             )
             conn.execute(
                 """
                 INSERT INTO workers(
-                  worker, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+                  name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(worker) DO UPDATE SET
+                ON CONFLICT(name) DO UPDATE SET
                   last_seen = MAX(workers.last_seen, excluded.last_seen),
                   accepted = workers.accepted + excluded.accepted,
                   rejected = workers.rejected + excluded.rejected,
@@ -266,7 +285,7 @@ def list_blocks(limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _parse_worker_name(worker: str) -> tuple[str, str]:
-    """Split 'username.minername' on the first dot; no dot → miner_name is ''."""
+    """Split 'username.minername' on the first dot; no dot -> miner_name is ''."""
     dot_idx = worker.find(".")
     if dot_idx >= 0:
         return worker[:dot_idx], worker[dot_idx + 1:]
@@ -360,9 +379,9 @@ def list_workers() -> list[dict[str, Any]]:
     with _WRITE_LOCK:
         rows = conn.execute(
             """
-            SELECT worker AS name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
             FROM workers
-            ORDER BY last_seen DESC, worker ASC
+            ORDER BY last_seen DESC, name ASC
             """
         ).fetchall()
         items = [dict(row) for row in rows]
@@ -378,9 +397,9 @@ def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | Non
     with _WRITE_LOCK:
         row = conn.execute(
             """
-            SELECT worker AS name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
             FROM workers
-            WHERE worker = ?
+            WHERE name = ?
             """,
             (worker,),
         ).fetchone()
@@ -392,13 +411,13 @@ def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | Non
 
         username = item["username"]
         all_worker_rows = conn.execute(
-            "SELECT worker, accepted, rejected, dup FROM workers"
+            "SELECT name, accepted, rejected, dup FROM workers"
         ).fetchall()
         siblings = [
             dict(r) for r in all_worker_rows
-            if _parse_worker_name(r["worker"])[0] == username
+            if _parse_worker_name(r["name"])[0] == username
         ]
-        sibling_names = [s["worker"] for s in siblings]
+        sibling_names = [s["name"] for s in siblings]
         cutoff_15m = now_ts - 900
         user_sum_diff = 0.0
         if sibling_names:
@@ -458,16 +477,16 @@ def list_users() -> list[dict[str, Any]]:
 
     with _WRITE_LOCK:
         rows = conn.execute(
-            "SELECT worker, first_seen, last_seen, accepted, rejected, dup FROM workers"
+            "SELECT name, first_seen, last_seen, accepted, rejected, dup FROM workers"
         ).fetchall()
 
         user_groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             d = dict(row)
-            uname = _parse_worker_name(d["worker"])[0]
+            uname = _parse_worker_name(d["name"])[0]
             user_groups.setdefault(uname, []).append(d)
 
-        all_worker_names = [d["worker"] for d in (dict(r) for r in rows)]
+        all_worker_names = [d["name"] for d in (dict(r) for r in rows)]
         hashrate_by_worker: dict[str, float] = {}
         blocks_by_worker: dict[str, dict[str, Any]] = {}
         if all_worker_names:
@@ -502,15 +521,15 @@ def list_users() -> list[dict[str, Any]]:
             last_seen = max(w["last_seen"] for w in workers_in_group)
             first_seen = min(w["first_seen"] for w in workers_in_group)
             user_sum_diff = sum(
-                (hashrate_by_worker.get(w["worker"], 0.0) or 0.0)
+                (hashrate_by_worker.get(w["name"], 0.0) or 0.0)
                 for w in workers_in_group
             )
             user_bf = sum(
-                blocks_by_worker.get(w["worker"], {}).get("bf", 0)
+                blocks_by_worker.get(w["name"], {}).get("bf", 0)
                 for w in workers_in_group
             )
             user_rt = sum(
-                blocks_by_worker.get(w["worker"], {}).get("rt", 0.0)
+                blocks_by_worker.get(w["name"], {}).get("rt", 0.0)
                 for w in workers_in_group
             )
             result.append({
@@ -538,10 +557,10 @@ def get_user(username: str) -> dict[str, Any] | None:
     now_ts = int(time.time())
 
     with _WRITE_LOCK:
-        all_names = conn.execute("SELECT worker FROM workers").fetchall()
+        all_names = conn.execute("SELECT name FROM workers").fetchall()
         matching_names = [
-            r["worker"] for r in all_names
-            if _parse_worker_name(r["worker"])[0] == username
+            r["name"] for r in all_names
+            if _parse_worker_name(r["name"])[0] == username
         ]
         if not matching_names:
             return None
@@ -549,10 +568,10 @@ def get_user(username: str) -> dict[str, Any] | None:
         ph = ",".join("?" * len(matching_names))
         rows = conn.execute(
             f"""
-            SELECT worker AS name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
             FROM workers
-            WHERE worker IN ({ph})
-            ORDER BY last_seen DESC, worker ASC
+            WHERE name IN ({ph})
+            ORDER BY last_seen DESC, name ASC
             """,
             matching_names,
         ).fetchall()
