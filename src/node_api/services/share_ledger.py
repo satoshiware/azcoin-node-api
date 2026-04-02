@@ -27,6 +27,8 @@ _REQUIRED_SHARE_KEYS = (
 def _connection_factory(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -263,16 +265,15 @@ def ingest_block(payload: dict[str, Any]) -> None:
 def list_blocks(limit: int = 50) -> list[dict[str, Any]]:
     conn = _connection()
 
-    with _WRITE_LOCK:
-        rows = conn.execute(
-            """
-            SELECT height, block_hash, reward, worker, ts, confirmed
-            FROM blocks
-            ORDER BY height DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT height, block_hash, reward, worker, ts, confirmed
+        FROM blocks
+        ORDER BY height DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
 
     result = []
     for row in rows:
@@ -376,16 +377,15 @@ def list_workers() -> list[dict[str, Any]]:
     conn = _connection()
     now_ts = int(time.time())
 
-    with _WRITE_LOCK:
-        rows = conn.execute(
-            """
-            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
-            FROM workers
-            ORDER BY last_seen DESC, name ASC
-            """
-        ).fetchall()
-        items = [dict(row) for row in rows]
-        _enrich_workers(items, conn, now_ts)
+    rows = conn.execute(
+        """
+        SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+        FROM workers
+        ORDER BY last_seen DESC, name ASC
+        """
+    ).fetchall()
+    items = [dict(row) for row in rows]
+    _enrich_workers(items, conn, now_ts)
 
     return items
 
@@ -394,79 +394,78 @@ def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | Non
     conn = _connection()
     now_ts = int(time.time())
 
-    with _WRITE_LOCK:
-        row = conn.execute(
+    row = conn.execute(
+        """
+        SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+        FROM workers
+        WHERE name = ?
+        """,
+        (worker,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    item: dict[str, Any] = dict(row)
+    _enrich_workers([item], conn, now_ts)
+
+    username = item["username"]
+    all_worker_rows = conn.execute(
+        "SELECT name, accepted, rejected, dup FROM workers"
+    ).fetchall()
+    siblings = [
+        dict(r) for r in all_worker_rows
+        if _parse_worker_name(r["name"])[0] == username
+    ]
+    sibling_names = [s["name"] for s in siblings]
+    cutoff_15m = now_ts - 900
+    user_sum_diff = 0.0
+    if sibling_names:
+        ph = ",".join("?" * len(sibling_names))
+        hr_row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(share_diff), 0.0) AS sd
+            FROM shares
+            WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
+            """,
+            sibling_names + [cutoff_15m],
+        ).fetchone()
+        user_sum_diff = hr_row["sd"] if hr_row else 0.0
+    total_acc = sum(s["accepted"] for s in siblings)
+    total_rej = sum(s["rejected"] for s in siblings)
+    user_blocks_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
+        FROM blocks WHERE worker IN ({ph})
+        """,
+        sibling_names,
+    ).fetchone() if sibling_names else None
+    user_bf = user_blocks_row["bf"] if user_blocks_row else 0
+    user_rt = user_blocks_row["rt"] if user_blocks_row else 0.0
+    item["user_summary"] = {
+        "username": username,
+        "hashrate_user": (user_sum_diff * 4294967296.0) / 900.0 if user_sum_diff else 0.0,
+        "miner_count": len(siblings),
+        "total_accepted": total_acc,
+        "total_rejected": total_rej,
+        "total_dup": sum(s["dup"] for s in siblings),
+        "total_shares": total_acc + total_rej,
+        "blocks_found": user_bf,
+        "rewards_total": user_rt,
+    }
+
+    if include_recent:
+        recent_rows = conn.execute(
             """
-            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
-            FROM workers
-            WHERE name = ?
+            SELECT id, ts, worker, job_id, extranonce2, ntime, nonce,
+                   accepted, duplicate, share_diff, reason
+            FROM shares
+            WHERE worker = ?
+            ORDER BY ts DESC, id DESC
+            LIMIT 50
             """,
             (worker,),
-        ).fetchone()
-        if row is None:
-            return None
-
-        item: dict[str, Any] = dict(row)
-        _enrich_workers([item], conn, now_ts)
-
-        username = item["username"]
-        all_worker_rows = conn.execute(
-            "SELECT name, accepted, rejected, dup FROM workers"
         ).fetchall()
-        siblings = [
-            dict(r) for r in all_worker_rows
-            if _parse_worker_name(r["name"])[0] == username
-        ]
-        sibling_names = [s["name"] for s in siblings]
-        cutoff_15m = now_ts - 900
-        user_sum_diff = 0.0
-        if sibling_names:
-            ph = ",".join("?" * len(sibling_names))
-            hr_row = conn.execute(
-                f"""
-                SELECT COALESCE(SUM(share_diff), 0.0) AS sd
-                FROM shares
-                WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
-                """,
-                sibling_names + [cutoff_15m],
-            ).fetchone()
-            user_sum_diff = hr_row["sd"] if hr_row else 0.0
-        total_acc = sum(s["accepted"] for s in siblings)
-        total_rej = sum(s["rejected"] for s in siblings)
-        user_blocks_row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
-            FROM blocks WHERE worker IN ({ph})
-            """,
-            sibling_names,
-        ).fetchone() if sibling_names else None
-        user_bf = user_blocks_row["bf"] if user_blocks_row else 0
-        user_rt = user_blocks_row["rt"] if user_blocks_row else 0.0
-        item["user_summary"] = {
-            "username": username,
-            "hashrate_user": (user_sum_diff * 4294967296.0) / 900.0 if user_sum_diff else 0.0,
-            "miner_count": len(siblings),
-            "total_accepted": total_acc,
-            "total_rejected": total_rej,
-            "total_dup": sum(s["dup"] for s in siblings),
-            "total_shares": total_acc + total_rej,
-            "blocks_found": user_bf,
-            "rewards_total": user_rt,
-        }
-
-        if include_recent:
-            recent_rows = conn.execute(
-                """
-                SELECT id, ts, worker, job_id, extranonce2, ntime, nonce,
-                       accepted, duplicate, share_diff, reason
-                FROM shares
-                WHERE worker = ?
-                ORDER BY ts DESC, id DESC
-                LIMIT 50
-                """,
-                (worker,),
-            ).fetchall()
-            item["recent_shares"] = [dict(recent_row) for recent_row in recent_rows]
+        item["recent_shares"] = [dict(recent_row) for recent_row in recent_rows]
 
     return item
 
@@ -475,79 +474,78 @@ def list_users() -> list[dict[str, Any]]:
     conn = _connection()
     now_ts = int(time.time())
 
-    with _WRITE_LOCK:
-        rows = conn.execute(
-            "SELECT name, first_seen, last_seen, accepted, rejected, dup FROM workers"
+    rows = conn.execute(
+        "SELECT name, first_seen, last_seen, accepted, rejected, dup FROM workers"
+    ).fetchall()
+
+    user_groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        d = dict(row)
+        uname = _parse_worker_name(d["name"])[0]
+        user_groups.setdefault(uname, []).append(d)
+
+    all_worker_names = [d["name"] for d in (dict(r) for r in rows)]
+    hashrate_by_worker: dict[str, float] = {}
+    blocks_by_worker: dict[str, dict[str, Any]] = {}
+    if all_worker_names:
+        cutoff_15m = now_ts - 900
+        ph = ",".join("?" * len(all_worker_names))
+        hr_rows = conn.execute(
+            f"""
+            SELECT worker, SUM(share_diff) AS sum_diff
+            FROM shares
+            WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
+            GROUP BY worker
+            """,
+            all_worker_names + [cutoff_15m],
         ).fetchall()
+        hashrate_by_worker = {r["worker"]: r["sum_diff"] for r in hr_rows}
 
-        user_groups: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            d = dict(row)
-            uname = _parse_worker_name(d["name"])[0]
-            user_groups.setdefault(uname, []).append(d)
+        blk_rows = conn.execute(
+            f"""
+            SELECT worker, COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
+            FROM blocks
+            WHERE worker IN ({ph})
+            GROUP BY worker
+            """,
+            all_worker_names,
+        ).fetchall()
+        blocks_by_worker = {r["worker"]: dict(r) for r in blk_rows}
 
-        all_worker_names = [d["name"] for d in (dict(r) for r in rows)]
-        hashrate_by_worker: dict[str, float] = {}
-        blocks_by_worker: dict[str, dict[str, Any]] = {}
-        if all_worker_names:
-            cutoff_15m = now_ts - 900
-            ph = ",".join("?" * len(all_worker_names))
-            hr_rows = conn.execute(
-                f"""
-                SELECT worker, SUM(share_diff) AS sum_diff
-                FROM shares
-                WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
-                GROUP BY worker
-                """,
-                all_worker_names + [cutoff_15m],
-            ).fetchall()
-            hashrate_by_worker = {r["worker"]: r["sum_diff"] for r in hr_rows}
+    result = []
+    for uname, workers_in_group in user_groups.items():
+        total_acc = sum(w["accepted"] for w in workers_in_group)
+        total_rej = sum(w["rejected"] for w in workers_in_group)
+        last_seen = max(w["last_seen"] for w in workers_in_group)
+        first_seen = min(w["first_seen"] for w in workers_in_group)
+        user_sum_diff = sum(
+            (hashrate_by_worker.get(w["name"], 0.0) or 0.0)
+            for w in workers_in_group
+        )
+        user_bf = sum(
+            blocks_by_worker.get(w["name"], {}).get("bf", 0)
+            for w in workers_in_group
+        )
+        user_rt = sum(
+            blocks_by_worker.get(w["name"], {}).get("rt", 0.0)
+            for w in workers_in_group
+        )
+        result.append({
+            "username": uname,
+            "hashrate_user": (user_sum_diff * 4294967296.0) / 900.0 if user_sum_diff else 0.0,
+            "miner_count": len(workers_in_group),
+            "total_accepted": total_acc,
+            "total_rejected": total_rej,
+            "total_dup": sum(w["dup"] for w in workers_in_group),
+            "total_shares": total_acc + total_rej,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "seconds_since_last_share": max(0, now_ts - last_seen),
+            "blocks_found": user_bf,
+            "rewards_total": user_rt,
+        })
 
-            blk_rows = conn.execute(
-                f"""
-                SELECT worker, COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
-                FROM blocks
-                WHERE worker IN ({ph})
-                GROUP BY worker
-                """,
-                all_worker_names,
-            ).fetchall()
-            blocks_by_worker = {r["worker"]: dict(r) for r in blk_rows}
-
-        result = []
-        for uname, workers_in_group in user_groups.items():
-            total_acc = sum(w["accepted"] for w in workers_in_group)
-            total_rej = sum(w["rejected"] for w in workers_in_group)
-            last_seen = max(w["last_seen"] for w in workers_in_group)
-            first_seen = min(w["first_seen"] for w in workers_in_group)
-            user_sum_diff = sum(
-                (hashrate_by_worker.get(w["name"], 0.0) or 0.0)
-                for w in workers_in_group
-            )
-            user_bf = sum(
-                blocks_by_worker.get(w["name"], {}).get("bf", 0)
-                for w in workers_in_group
-            )
-            user_rt = sum(
-                blocks_by_worker.get(w["name"], {}).get("rt", 0.0)
-                for w in workers_in_group
-            )
-            result.append({
-                "username": uname,
-                "hashrate_user": (user_sum_diff * 4294967296.0) / 900.0 if user_sum_diff else 0.0,
-                "miner_count": len(workers_in_group),
-                "total_accepted": total_acc,
-                "total_rejected": total_rej,
-                "total_dup": sum(w["dup"] for w in workers_in_group),
-                "total_shares": total_acc + total_rej,
-                "first_seen": first_seen,
-                "last_seen": last_seen,
-                "seconds_since_last_share": max(0, now_ts - last_seen),
-                "blocks_found": user_bf,
-                "rewards_total": user_rt,
-            })
-
-        result.sort(key=lambda u: (-u["last_seen"], u["username"]))
+    result.sort(key=lambda u: (-u["last_seen"], u["username"]))
 
     return result
 
@@ -556,53 +554,52 @@ def get_user(username: str) -> dict[str, Any] | None:
     conn = _connection()
     now_ts = int(time.time())
 
-    with _WRITE_LOCK:
-        all_names = conn.execute("SELECT name FROM workers").fetchall()
-        matching_names = [
-            r["name"] for r in all_names
-            if _parse_worker_name(r["name"])[0] == username
-        ]
-        if not matching_names:
-            return None
+    all_names = conn.execute("SELECT name FROM workers").fetchall()
+    matching_names = [
+        r["name"] for r in all_names
+        if _parse_worker_name(r["name"])[0] == username
+    ]
+    if not matching_names:
+        return None
 
-        ph = ",".join("?" * len(matching_names))
-        rows = conn.execute(
-            f"""
-            SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
-            FROM workers
-            WHERE name IN ({ph})
-            ORDER BY last_seen DESC, name ASC
-            """,
-            matching_names,
-        ).fetchall()
-        miners = [dict(r) for r in rows]
-        _enrich_workers(miners, conn, now_ts)
+    ph = ",".join("?" * len(matching_names))
+    rows = conn.execute(
+        f"""
+        SELECT name, first_seen, last_seen, accepted, rejected, dup, best_share_diff
+        FROM workers
+        WHERE name IN ({ph})
+        ORDER BY last_seen DESC, name ASC
+        """,
+        matching_names,
+    ).fetchall()
+    miners = [dict(r) for r in rows]
+    _enrich_workers(miners, conn, now_ts)
 
-        total_acc = sum(m["accepted"] for m in miners)
-        total_rej = sum(m["rejected"] for m in miners)
-        last_seen = max(m["last_seen"] for m in miners)
-        first_seen = min(m["first_seen"] for m in miners)
+    total_acc = sum(m["accepted"] for m in miners)
+    total_rej = sum(m["rejected"] for m in miners)
+    last_seen = max(m["last_seen"] for m in miners)
+    first_seen = min(m["first_seen"] for m in miners)
 
-        cutoff_15m = now_ts - 900
-        hr_row = conn.execute(
-            f"""
-            SELECT COALESCE(SUM(share_diff), 0.0) AS sd
-            FROM shares
-            WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
-            """,
-            matching_names + [cutoff_15m],
-        ).fetchone()
-        user_sum_diff = hr_row["sd"] if hr_row else 0.0
+    cutoff_15m = now_ts - 900
+    hr_row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(share_diff), 0.0) AS sd
+        FROM shares
+        WHERE worker IN ({ph}) AND ts >= ? AND accepted = 1
+        """,
+        matching_names + [cutoff_15m],
+    ).fetchone()
+    user_sum_diff = hr_row["sd"] if hr_row else 0.0
 
-        blk_row = conn.execute(
-            f"""
-            SELECT COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
-            FROM blocks WHERE worker IN ({ph})
-            """,
-            matching_names,
-        ).fetchone()
-        user_bf = blk_row["bf"] if blk_row else 0
-        user_rt = blk_row["rt"] if blk_row else 0.0
+    blk_row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS bf, COALESCE(SUM(reward), 0.0) AS rt
+        FROM blocks WHERE worker IN ({ph})
+        """,
+        matching_names,
+    ).fetchone()
+    user_bf = blk_row["bf"] if blk_row else 0
+    user_rt = blk_row["rt"] if blk_row else 0.0
 
     return {
         "username": username,
