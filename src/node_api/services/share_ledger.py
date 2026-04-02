@@ -37,9 +37,20 @@ def _db_path() -> str:
 
 
 def _connection() -> sqlite3.Connection:
+    """Return the shared write connection."""
     if _CONN is None:
         raise RuntimeError("Share ledger is not initialized")
     return _CONN
+
+
+def _read_connection() -> sqlite3.Connection:
+    """Create a short-lived read-only connection (WAL allows concurrent readers)."""
+    if _DB_PATH is None:
+        raise RuntimeError("Share ledger is not initialized")
+    conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -263,7 +274,7 @@ def ingest_block(payload: dict[str, Any]) -> None:
 
 
 def list_blocks(limit: int = 50) -> list[dict[str, Any]]:
-    conn = _connection()
+    conn = _read_connection()
 
     rows = conn.execute(
         """
@@ -374,7 +385,7 @@ def _enrich_workers(
 
 
 def list_workers() -> list[dict[str, Any]]:
-    conn = _connection()
+    conn = _read_connection()
     now_ts = int(time.time())
 
     rows = conn.execute(
@@ -391,7 +402,7 @@ def list_workers() -> list[dict[str, Any]]:
 
 
 def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | None:
-    conn = _connection()
+    conn = _read_connection()
     now_ts = int(time.time())
 
     row = conn.execute(
@@ -471,7 +482,7 @@ def get_worker(worker: str, include_recent: bool = True) -> dict[str, Any] | Non
 
 
 def list_users() -> list[dict[str, Any]]:
-    conn = _connection()
+    conn = _read_connection()
     now_ts = int(time.time())
 
     rows = conn.execute(
@@ -551,7 +562,7 @@ def list_users() -> list[dict[str, Any]]:
 
 
 def get_user(username: str) -> dict[str, Any] | None:
-    conn = _connection()
+    conn = _read_connection()
     now_ts = int(time.time())
 
     all_names = conn.execute("SELECT name FROM workers").fetchall()
