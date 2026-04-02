@@ -1,0 +1,17 @@
+[Unit]
+Description=AZCoin Node API (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=azcoin
+Group=azcoin
+WorkingDirectory=/opt/azcoin-node-api
+Environment=PYTHONPATH=/opt/azcoin-node-api/src
+EnvironmentFile=/etc/azcoin/azcoin-node-api.env
+ExecStart=/opt/azcoin-node-api/.venv/bin/uvicorn node_api.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -62,6 +62,67 @@ Fail-closed rules:
 - If `APP_ENV=prod` then `AUTH_MODE` must be `jwt` (the app will refuse to start otherwise).
 - If `AUTH_MODE=dev_token` then `AZ_API_DEV_TOKEN` must be set (the app will refuse to start otherwise).
 
+## Running on bare-metal Linux
+
+The example paths below (`/opt/azcoin-node-api`, `/etc/azcoin/`) are conventions — adjust to match your layout.
+
+**Prerequisites:** Python 3.11+, git, a dedicated service user.
+
+```bash
+# Create service user (no login shell)
+sudo useradd -r -s /usr/sbin/nologin azcoin
+
+# Clone and set up virtualenv
+sudo git clone <repo-url> /opt/azcoin-node-api
+cd /opt/azcoin-node-api
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install --upgrade pip
+sudo .venv/bin/pip install -r requirements.txt
+
+# Create env file from the checked-in example
+sudo mkdir -p /etc/azcoin
+sudo cp .env.example /etc/azcoin/azcoin-node-api.env
+sudo chmod 600 /etc/azcoin/azcoin-node-api.env
+# Edit /etc/azcoin/azcoin-node-api.env — set real values for
+# AZ_RPC_USER, AZ_RPC_PASSWORD, AZ_RPC_URL, AZ_SHARE_DB_PATH, etc.
+
+# Ensure the data directory exists and is owned by the service user
+sudo mkdir -p /data
+sudo chown azcoin:azcoin /data
+
+# Set ownership
+sudo chown -R azcoin:azcoin /opt/azcoin-node-api
+```
+
+**Run manually (foreground test):**
+
+```bash
+cd /opt/azcoin-node-api
+PYTHONPATH=src .venv/bin/uvicorn node_api.main:app --host 0.0.0.0 --port 8080
+```
+
+**Install the systemd service:**
+
+An example unit file is checked in at `deployment/systemd/azcoin-node-api.service`.
+
+```bash
+sudo cp deployment/systemd/azcoin-node-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now azcoin-node-api
+
+# Check status / logs
+sudo systemctl status azcoin-node-api
+sudo journalctl -u azcoin-node-api -f
+```
+
+The unit expects:
+- **WorkingDirectory:** `/opt/azcoin-node-api`
+- **EnvironmentFile:** `/etc/azcoin/azcoin-node-api.env`
+- **ExecStart:** `.venv/bin/uvicorn` inside the working directory
+- **User/Group:** `azcoin`
+
+Edit the unit file paths if your layout differs, then `systemctl daemon-reload`.
+
 ## Running with Docker
 
 ```powershell

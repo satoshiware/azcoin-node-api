@@ -1,0 +1,29 @@
+﻿
+Path                                                                          LineNumber Line                                                                                 
+----                                                                          ---------- ----                                                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\docker-compose.yml                              31           "CMD-SHELL",                                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\docker-compose.yml                              63           "CMD-SHELL",                                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\docker-compose.yml                              94           "CMD-SHELL",                                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\pyproject.toml                                   8   "uvicorn[standard]>=0.30.0",                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\README.md                                       22 uvicorn node_api.main:app --reload --host 0.0.0.0 --port 8080                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\.github\workflows\docker.yml                    33       - name: Set up Docker Buildx                                                   
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            13 from node_api.routes.v1.az_node import router as az_node_router                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            15 from node_api.routes.v1.btc_node import router as btc_node_router                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            23 from node_api.routes.v1.node import router as node_router                            
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            43         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            47         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            49         {"name": "node", "description": "Multi-node summary endpoints (protected)."},
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                            55         title="AZCoin Node API",                                                     
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\services\zmq_subscriber.py         15     # Your node sends 3 frames for rawtx: [topic, payload, seq(4 bytes LE)]          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_auth_smoke.py                        28     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_auth_smoke.py                        75     from node_api.routes.v1 import node as node_module                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_az_mining.py                        271             raise AzcoinRpcResponseError(code=-32603, message="Node is not synced")  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_az_readonly_endpoints.py             67     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_info_rpc.py                     26     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_info_rpc.py                     63     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_info_rpc.py                     79     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_info_rpc.py                     95     from node_api.routes.v1 import az_node as az_node_module                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_summary.py                      29     from node_api.routes.v1 import node as node_module                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_summary.py                      80     from node_api.routes.v1 import node as node_module                               
+
+
