@@ -40,6 +40,35 @@ def _connection() -> sqlite3.Connection:
     return _CONN
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add columns that may be missing from older schema versions."""
+    existing: dict[str, set[str]] = {}
+    for table in ("shares", "workers"):
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing[table] = {row["name"] for row in rows}
+
+    migrations: list[str] = []
+    if "duplicate" not in existing.get("shares", set()):
+        migrations.append(
+            "ALTER TABLE shares ADD COLUMN duplicate INTEGER NOT NULL DEFAULT 0"
+        )
+    if "share_diff" not in existing.get("shares", set()):
+        migrations.append(
+            "ALTER TABLE shares ADD COLUMN share_diff REAL NOT NULL DEFAULT 0.0"
+        )
+    if "dup" not in existing.get("workers", set()):
+        migrations.append(
+            "ALTER TABLE workers ADD COLUMN dup INTEGER NOT NULL DEFAULT 0"
+        )
+    if "best_share_diff" not in existing.get("workers", set()):
+        migrations.append(
+            "ALTER TABLE workers ADD COLUMN best_share_diff REAL NOT NULL DEFAULT 0.0"
+        )
+
+    for stmt in migrations:
+        conn.execute(stmt)
+
+
 def init_db() -> None:
     global _CONN, _DB_PATH
 
@@ -101,6 +130,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_blocks_ts ON blocks(ts);
             """
         )
+
+        _migrate_schema(conn)
         conn.commit()
 
         _CONN = conn
