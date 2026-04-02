@@ -81,6 +81,14 @@ def create_app() -> FastAPI:
     )
 
     @app.on_event("startup")
+    async def expand_thread_pool() -> None:
+        from anyio import CapacityLimiter
+        from anyio.lowlevel import RunVar
+        limiter = CapacityLimiter(200)
+        RunVar("_default_thread_limiter").set(limiter)
+        logger.info("Thread pool expanded to 200")
+
+    @app.on_event("startup")
     def start_events_subscriber() -> None:
         init_db()
         logger.info("Share ledger initialized")
