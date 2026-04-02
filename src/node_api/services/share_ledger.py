@@ -48,6 +48,10 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         existing[table] = {row["name"] for row in rows}
 
     migrations: list[str] = []
+    if "ts_ms" not in existing.get("shares", set()):
+        migrations.append(
+            "ALTER TABLE shares ADD COLUMN ts_ms INTEGER NOT NULL DEFAULT 0"
+        )
     if "duplicate" not in existing.get("shares", set()):
         migrations.append(
             "ALTER TABLE shares ADD COLUMN duplicate INTEGER NOT NULL DEFAULT 0"
@@ -92,6 +96,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS shares(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               ts INTEGER NOT NULL,
+              ts_ms INTEGER NOT NULL DEFAULT 0,
               worker TEXT NOT NULL,
               job_id TEXT NOT NULL,
               extranonce2 TEXT NOT NULL,
@@ -156,15 +161,17 @@ def ingest_share(payload: dict[str, Any]) -> None:
 
     with _WRITE_LOCK:
         with conn:
+            ts_ms = int(payload.get("ts_ms", ts * 1000))
             conn.execute(
                 """
                 INSERT INTO shares(
-                  ts, worker, job_id, extranonce2, ntime, nonce,
+                  ts, ts_ms, worker, job_id, extranonce2, ntime, nonce,
                   accepted, duplicate, share_diff, reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ts,
+                    ts_ms,
                     worker,
                     str(payload["job_id"]),
                     str(payload["extranonce2"]),
