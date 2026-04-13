@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.2] - 2026-02-12
+## [0.1.7] - 2026-04-13
 
 - Added AZ read-only endpoints: peers, mempool info, wallet summary, and wallet transactions.
 - Added `since` validation with stable errors: `AZ_INVALID_SINCE` (`422`) and `AZ_SINCE_NOT_FOUND` (`404`).

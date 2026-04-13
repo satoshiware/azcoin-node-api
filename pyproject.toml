@@ -1,6 +1,6 @@
 [project]
 name = "azcoin-node-api"
-version = "0.1.4"
+version = "0.1.7"
 description = "Node-side API service for AZCoin Core (FastAPI)."
 requires-python = ">=3.11"
 dependencies = [
