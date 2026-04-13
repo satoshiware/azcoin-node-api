@@ -22,7 +22,9 @@ def _parse_cookie_file(path: str) -> tuple[str, str]:
         raise BitcoinRpcTransportError("Bitcoin RPC cookie file is empty")
     parts = raw.split(":", 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise BitcoinRpcTransportError("Bitcoin RPC cookie file malformed (expected username:password)")
+        raise BitcoinRpcTransportError(
+            "Bitcoin RPC cookie file malformed (expected username:password)",
+        )
     return parts[0], parts[1]
 
 

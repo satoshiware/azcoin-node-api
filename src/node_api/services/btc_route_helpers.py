@@ -23,7 +23,10 @@ def _btc_rpc_configured() -> bool:
 
 
 def get_btc_rpc() -> BitcoinRPC:
-    """Return configured Bitcoin RPC client or raise BTC_RPC_NOT_CONFIGURED / BTC_RPC_UNAVAILABLE."""
+    """Return configured Bitcoin RPC client.
+
+    Raises HTTP 503 with BTC_RPC_NOT_CONFIGURED or BTC_RPC_UNAVAILABLE.
+    """
     if not _btc_rpc_configured():
         raise HTTPException(
             status_code=503,

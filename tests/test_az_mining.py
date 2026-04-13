@@ -42,12 +42,15 @@ def test_template_current_success(monkeypatch):
     from node_api.routes.v1 import az_mining as az_mining_module
 
     curtime = 1700000000
+    prev = (
+        "0000000000000000000123456789abcdef0123456789abcdef0123456789abcdef"
+    )
 
     def fake_call(self, method: str, params=None):  # noqa: ANN001
         assert method == "getblocktemplate"
-        assert params == [{}]
+        assert params == [{"rules": ["segwit"]}]
         return {
-            "previousblockhash": "0000000000000000000123456789abcdef0123456789abcdef0123456789abcdef",
+            "previousblockhash": prev,
             "version": 536870912,
             "bits": "1d00ffff",
             "curtime": curtime,
@@ -59,8 +62,16 @@ def test_template_current_success(monkeypatch):
     r = client.get("/v1/az/mining/template/current", headers=AUTH_HEADER)
     assert r.status_code == 200
     body = r.json()
-    assert set(body.keys()) == {"job_id", "prev_hash", "version", "nbits", "ntime", "clean_jobs", "height"}
-    assert body["prev_hash"] == "0000000000000000000123456789abcdef0123456789abcdef0123456789abcdef"
+    assert set(body.keys()) == {
+        "job_id",
+        "prev_hash",
+        "version",
+        "nbits",
+        "ntime",
+        "clean_jobs",
+        "height",
+    }
+    assert body["prev_hash"] == prev
     assert body["version"] == 536870912
     assert body["nbits"] == "1d00ffff"
     assert body["ntime"] == hex(curtime)[2:]

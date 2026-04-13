@@ -1,0 +1,22 @@
+[Unit]
+Description=AZCoin Node API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azcoinapi
+Group=azcoinapi
+WorkingDirectory=/opt/azcoin-node-api
+Environment=PYTHONPATH=/opt/azcoin-node-api/src
+EnvironmentFile=-/etc/azcoin-node-api/azcoin-node-api.env
+ExecStart=/opt/azcoin-node-api/.venv/bin/uvicorn node_api.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -47,7 +47,15 @@ def test_btc_node_info_normalized_success(monkeypatch):
             return {"size": 3, "bytes": 4096}
         raise AssertionError(f"unexpected method: {method}")
 
-    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", lambda self, m, p=None: fake_call(self, m, p), raising=True)
+    def call_dict_patch(self, m, p=None):  # noqa: ANN001
+        return fake_call(self, m, p)
+
+    monkeypatch.setattr(
+        btc_rpc_module.BitcoinRPC,
+        "call_dict",
+        call_dict_patch,
+        raising=True,
+    )
 
     r = client.get("/v1/btc/node/info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200
@@ -89,7 +97,15 @@ def test_btc_node_blockchain_info_success(monkeypatch):
         assert method == "getblockchaininfo"
         return {"chain": "main", "blocks": 77, "headers": 80}
 
-    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", lambda self, m, p=None: fake_call(self, m, p), raising=True)
+    def call_dict_patch2(self, m, p=None):  # noqa: ANN001
+        return fake_call(self, m, p)
+
+    monkeypatch.setattr(
+        btc_rpc_module.BitcoinRPC,
+        "call_dict",
+        call_dict_patch2,
+        raising=True,
+    )
 
     r = client.get("/v1/btc/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200

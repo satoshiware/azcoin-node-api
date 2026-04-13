@@ -19,6 +19,11 @@ def test_protected_requires_auth(monkeypatch):
     r = client.get("/v1/az/node/info")
     assert r.status_code == 401
 
+    tr = client.get("/v1/translator/status")
+    assert tr.status_code == 401
+    tr_rt = client.get("/v1/translator/runtime")
+    assert tr_rt.status_code == 401
+
 
 def test_protected_rejects_wrong_token(monkeypatch):
     monkeypatch.setenv("APP_ENV", "dev")

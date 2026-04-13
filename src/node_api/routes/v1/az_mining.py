@@ -65,7 +65,9 @@ class MiningTemplateResponse(BaseModel):
     version: int = Field(description="Block version")
     nbits: str = Field(description="Compact difficulty target (bits)")
     ntime: str = Field(description="Current time as hex (curtime)")
-    clean_jobs: bool = Field(description="True when serving current template; miners discard old work")
+    clean_jobs: bool = Field(
+        description="True when serving current template; miners discard old work",
+    )
     height: int = Field(description="Block height")
 
 

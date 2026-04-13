@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from node_api.services.bitcoin_rpc import BitcoinRpcError
 from node_api.services.btc_route_helpers import (
