@@ -1,3 +1,4 @@
+# ruff: noqa: I001
 from __future__ import annotations
 
 import logging
@@ -9,20 +10,21 @@ from node_api.auth.middleware import AuthConfig, JWTAuthMiddleware
 from node_api.auth.validator import RejectAllValidator, StaticTokenValidator
 from node_api.logging import configure_logging
 from node_api.routes.v1.az_mempool import router as az_mempool_router
+from node_api.routes.v1.az_mining import router as az_mining_router
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
+from node_api.routes.v1.btc_wallet import router as btc_wallet_router
 from node_api.routes.v1.events import router as events_router
 from node_api.routes.v1.health import (
     public_router as health_public_router,
     router as health_router,
 )
-from node_api.routes.v1.mining import router as mining_router
 from node_api.routes.v1.node import router as node_router
+from node_api.routes.v1.translator import router as translator_router
 from node_api.routes.v1.tx import send as tx_send
 from node_api.services.event_store import EventStore
 from node_api.services.events_bus import events_bus
-from node_api.services.share_ledger import init_db
 from node_api.settings import get_settings
 from node_api.version import get_version
 
@@ -39,12 +41,17 @@ def create_app() -> FastAPI:
         {"name": "health", "description": "Service liveness/readiness endpoints."},
         {"name": "events", "description": "Recent event stream endpoints."},
         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},
+        {
+            "name": "az-mining",
+            "description": "AZCoin mining template and status endpoints (protected).",
+        },
         {"name": "az-mempool", "description": "AZCoin mempool endpoints (protected)."},
         {"name": "az-wallet", "description": "AZCoin wallet endpoints (protected)."},
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
+        {"name": "btc-wallet", "description": "Bitcoin wallet endpoints (protected)."},
         {"name": "node", "description": "Multi-node summary endpoints (protected)."},
         {"name": "tx", "description": "Transaction endpoints (protected)."},
-        {"name": "mining", "description": "Mining share ingest and worker stats endpoints."},
+        {"name": "translator", "description": "Translator log observability (protected)."},
     ]
 
     app = FastAPI(
@@ -61,6 +68,7 @@ def create_app() -> FastAPI:
                 f"{settings.api_v1_prefix}/btc",
                 f"{settings.api_v1_prefix}/node",
                 f"{settings.api_v1_prefix}/tx",
+                f"{settings.api_v1_prefix}/translator",
             ),
             exempt_paths=(
                 f"{settings.api_v1_prefix}/health",
@@ -77,14 +85,15 @@ def create_app() -> FastAPI:
     )
 
     @app.on_event("startup")
-    def start_events_subscriber() -> None:
-        init_db()
-        logger.info("Share ledger initialized")
-        if settings.az_node_api_token:
-            logger.info("Share ingest auth enabled")
-        else:
-            logger.warning("WARNING: Share ingest auth disabled")
+    async def expand_thread_pool() -> None:
+        from anyio import CapacityLimiter
+        from anyio.lowlevel import RunVar
+        limiter = CapacityLimiter(200)
+        RunVar("_default_thread_limiter").set(limiter)
+        logger.info("Thread pool expanded to 200")
 
+    @app.on_event("startup")
+    def start_events_subscriber() -> None:
         events_bus.bind_event_store(store)
         events_bus.start()
 
@@ -95,11 +104,13 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(events_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)
+    app.include_router(az_mining_router, prefix=settings.api_v1_prefix)
     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)
     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
+    app.include_router(btc_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(node_router, prefix=settings.api_v1_prefix)
-    app.include_router(mining_router, prefix=settings.api_v1_prefix)
+    app.include_router(translator_router, prefix=settings.api_v1_prefix)
 
     # Keep versioning centralized so changing API_V1_PREFIX updates all routes.
     app.include_router(tx_send.router, prefix=settings.api_v1_prefix)

@@ -9,7 +9,7 @@ def _build_bus() -> EventsBus:
         tx_zmq_url="tcp://127.0.0.1:28332",
         rawtx_zmq_url="tcp://127.0.0.1:28334",
         rawblock_zmq_url="tcp://127.0.0.1:28333",
-        chain="micro",
+        chain="main",
     )
 
 
@@ -21,7 +21,7 @@ def test_normalize_rawtx_three_frames_includes_seq_and_payload_hex() -> None:
 
     assert event is not None
     assert event["type"] == "rawtx"
-    assert event["chain"] == "micro"
+    assert event["chain"] == "main"
     assert event["seq"] == 42
     assert event["payload_hex"] == "010203"
 
@@ -34,7 +34,7 @@ def test_append_mirrors_events_into_bound_event_store() -> None:
     bus._append(
         {
             "type": "rawtx",
-            "chain": "micro",
+            "chain": "main",
             "time": 1700000000,
             "seq": 7,
             "payload_hex": "deadbeef",
@@ -43,7 +43,7 @@ def test_append_mirrors_events_into_bound_event_store() -> None:
     bus._append(
         {
             "type": "hashtx",
-            "chain": "micro",
+            "chain": "main",
             "time": 1700000001,
             "hash": "aabbccdd",
         }

@@ -30,7 +30,7 @@ def test_btc_protected_requires_auth(monkeypatch):
 def test_btc_node_info_normalized_success(monkeypatch):
     client = _make_client(monkeypatch)
 
-    from node_api.routes.v1 import btc_node as btc_node_module
+    from node_api.services import bitcoin_rpc as btc_rpc_module
 
     def fake_call(self, method: str, params=None):  # noqa: ANN001
         if method == "getblockchaininfo":
@@ -47,7 +47,15 @@ def test_btc_node_info_normalized_success(monkeypatch):
             return {"size": 3, "bytes": 4096}
         raise AssertionError(f"unexpected method: {method}")
 
-    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", fake_call, raising=True)
+    def call_dict_patch(self, m, p=None):  # noqa: ANN001
+        return fake_call(self, m, p)
+
+    monkeypatch.setattr(
+        btc_rpc_module.BitcoinRPC,
+        "call_dict",
+        call_dict_patch,
+        raising=True,
+    )
 
     r = client.get("/v1/btc/node/info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200
@@ -67,12 +75,12 @@ def test_btc_node_info_normalized_success(monkeypatch):
 def test_btc_node_info_returns_502_on_rpc_unavailable(monkeypatch):
     client = _make_client(monkeypatch)
 
-    from node_api.routes.v1 import btc_node as btc_node_module
+    from node_api.services import bitcoin_rpc as btc_rpc_module
 
     def boom(self, method: str, params=None):  # noqa: ANN001
         raise BitcoinRpcTransportError("network down")
 
-    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", boom, raising=True)
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", boom, raising=True)
 
     r = client.get("/v1/btc/node/info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 502
@@ -83,13 +91,21 @@ def test_btc_node_info_returns_502_on_rpc_unavailable(monkeypatch):
 def test_btc_node_blockchain_info_success(monkeypatch):
     client = _make_client(monkeypatch)
 
-    from node_api.routes.v1 import btc_node as btc_node_module
+    from node_api.services import bitcoin_rpc as btc_rpc_module
 
     def fake_call(self, method: str, params=None):  # noqa: ANN001
         assert method == "getblockchaininfo"
         return {"chain": "main", "blocks": 77, "headers": 80}
 
-    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", fake_call, raising=True)
+    def call_dict_patch2(self, m, p=None):  # noqa: ANN001
+        return fake_call(self, m, p)
+
+    monkeypatch.setattr(
+        btc_rpc_module.BitcoinRPC,
+        "call_dict",
+        call_dict_patch2,
+        raising=True,
+    )
 
     r = client.get("/v1/btc/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200
@@ -99,12 +115,12 @@ def test_btc_node_blockchain_info_success(monkeypatch):
 def test_btc_node_blockchain_info_returns_502_on_rpc_unavailable(monkeypatch):
     client = _make_client(monkeypatch)
 
-    from node_api.routes.v1 import btc_node as btc_node_module
+    from node_api.services import bitcoin_rpc as btc_rpc_module
 
     def boom(self, method: str, params=None):  # noqa: ANN001
         raise BitcoinRpcTransportError("network down")
 
-    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", boom, raising=True)
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", boom, raising=True)
 
     r = client.get("/v1/btc/node/blockchain-info", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 502

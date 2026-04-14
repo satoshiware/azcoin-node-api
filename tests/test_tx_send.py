@@ -69,6 +69,7 @@ def test_tx_send_returns_503_when_rpc_not_configured(monkeypatch):
     from node_api.settings import get_settings
 
     monkeypatch.delenv("BTC_RPC_URL", raising=False)
+    monkeypatch.delenv("BTC_RPC_COOKIE_FILE", raising=False)
     monkeypatch.delenv("BTC_RPC_USER", raising=False)
     monkeypatch.delenv("BTC_RPC_PASSWORD", raising=False)
     get_settings.cache_clear()

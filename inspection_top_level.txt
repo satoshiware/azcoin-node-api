@@ -1,0 +1,39 @@
+﻿
+
+    Directory: C:\AZCoin\01_PROJECTS\azcoin-node-api
+
+
+Mode          LastWriteTime Length Name                     
+----          ------------- ------ ----                     
+d--h--   4/1/2026   2:52 PM        .git                     
+d-----  2/23/2026  11:51 AM        .github                  
+d-----   2/4/2026  11:30 AM        .pytest_cache            
+d-----   2/4/2026  11:27 AM        .ruff_cache              
+d-----   2/9/2026   9:19 AM        .venv_broken             
+d-----   2/9/2026   9:24 AM        src                      
+d-----  3/12/2026   1:25 PM        tests                    
+-a----  2/25/2026   4:20 PM    153 .dockerignore            
+-a----   2/4/2026   3:13 PM    156 .editorconfig            
+-a----  2/11/2026   4:38 PM    156 .env                     
+-a----   3/9/2026  11:32 AM    366 .env.example             
+-a----  2/11/2026   4:38 PM    197 .gitignore               
+-a----  2/17/2026  11:45 AM    301 .pre-commit-config.yaml  
+-a----   4/1/2026   2:50 PM  16465 bject {                  
+-a----  2/12/2026  12:36 PM    621 CHANGELOG.md             
+-a----   3/9/2026  11:32 AM   4158 docker-compose.yml       
+-a----  2/25/2026  12:25 PM   1227 Dockerfile               
+-a----   4/1/2026   2:52 PM     30 inspection_git_branch.txt
+-a----   4/1/2026   2:52 PM     38 inspection_git_log.txt   
+-a----   4/1/2026   2:52 PM     47 inspection_git_status.txt
+-a----   4/1/2026   2:52 PM      0 inspection_top_level.txt 
+-a----  1/20/2026   1:42 PM   1089 LICENSE                  
+-a----  2/17/2026  11:45 AM    396 Makefile                 
+-a----   3/9/2026  11:01 AM    414 pyproject.toml           
+-a----  3/12/2026   1:27 PM   6742 README.md                
+-a----  3/12/2026   2:46 PM    535 rebuild.ps1              
+-a----  2/17/2026  11:45 AM    175 requirements             
+-a----  2/17/2026  11:45 AM     98 requirements-dev.txt     
+-a----  2/17/2026  11:45 AM    101 requirements.txt         
+-a----   3/9/2026  11:01 AM      7 VERSION                  
+
+

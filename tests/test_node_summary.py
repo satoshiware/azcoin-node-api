@@ -49,7 +49,9 @@ def test_node_summary_ok(monkeypatch):
         }
 
     monkeypatch.setattr(node_module.AzcoinRpcClient, "call", az_call, raising=True)
-    monkeypatch.setattr(node_module.BitcoinRpcClient, "call", btc_call, raising=True)
+    from node_api.services import bitcoin_rpc as btc_rpc_module
+
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", btc_call, raising=True)
 
     r = client.get("/v1/node/summary", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200
@@ -85,7 +87,9 @@ def test_node_summary_degraded(monkeypatch):
         return {"chain": "main", "blocks": 30, "headers": 31}
 
     monkeypatch.setattr(node_module.AzcoinRpcClient, "call", az_call, raising=True)
-    monkeypatch.setattr(node_module.BitcoinRpcClient, "call", btc_call, raising=True)
+    from node_api.services import bitcoin_rpc as btc_rpc_module
+
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", btc_call, raising=True)
 
     r = client.get("/v1/node/summary", headers={"Authorization": "Bearer testtoken"})
     assert r.status_code == 200

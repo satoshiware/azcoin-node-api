@@ -26,7 +26,6 @@ def test_auth_smoke_for_blockchain_info_endpoints(monkeypatch):
     client = _make_client(monkeypatch)
 
     from node_api.routes.v1 import az_node as az_node_module
-    from node_api.routes.v1 import btc_node as btc_node_module
 
     def az_call(self, method: str, params=None):  # noqa: ANN001
         assert method == "getblockchaininfo"
@@ -49,7 +48,9 @@ def test_auth_smoke_for_blockchain_info_endpoints(monkeypatch):
         }
 
     monkeypatch.setattr(az_node_module.AzcoinRpcClient, "call", az_call, raising=True)
-    monkeypatch.setattr(btc_node_module.BitcoinRpcClient, "call", btc_call, raising=True)
+    from node_api.services import bitcoin_rpc as btc_rpc_module
+
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", btc_call, raising=True)
 
     az_resp = client.get(
         "/v1/az/node/blockchain-info",
@@ -94,7 +95,9 @@ def test_auth_smoke_for_node_summary(monkeypatch):
         }
 
     monkeypatch.setattr(node_module.AzcoinRpcClient, "call", az_call, raising=True)
-    monkeypatch.setattr(node_module.BitcoinRpcClient, "call", btc_call, raising=True)
+    from node_api.services import bitcoin_rpc as btc_rpc_module
+
+    monkeypatch.setattr(btc_rpc_module.BitcoinRPC, "call_dict", btc_call, raising=True)
 
     resp = client.get("/v1/node/summary", headers={"Authorization": "Bearer testtoken"})
     assert resp.status_code == 200

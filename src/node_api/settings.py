@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,8 +24,20 @@ class Settings(BaseSettings):
     port: int = Field(default=8080, validation_alias="PORT")
     api_v1_prefix: str = Field(default="/v1", validation_alias="API_V1_PREFIX")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
-    az_share_db_path: str = Field(default="/data/shares.db", validation_alias="AZ_SHARE_DB_PATH")
-    az_node_api_token: str = Field(default="", validation_alias="AZ_NODE_API_TOKEN")
+
+    translator_log_path: str | None = Field(default=None, validation_alias="TRANSLATOR_LOG_PATH")
+    translator_log_default_lines: int = Field(
+        default=200, ge=1, validation_alias="TRANSLATOR_LOG_DEFAULT_LINES"
+    )
+    translator_log_max_lines: int = Field(
+        default=1000, ge=1, validation_alias="TRANSLATOR_LOG_MAX_LINES"
+    )
+    translator_monitoring_base_url: str | None = Field(
+        default=None, validation_alias="TRANSLATOR_MONITORING_BASE_URL"
+    )
+    translator_monitoring_timeout_secs: float = Field(
+        default=3.0, ge=0.1, validation_alias="TRANSLATOR_MONITORING_TIMEOUT_SECS"
+    )
 
     # Auth (stub)
     auth_mode: Literal["dev_token", "jwt"] | None = Field(
@@ -40,15 +52,36 @@ class Settings(BaseSettings):
         default=None, validation_alias="AZ_RPC_PASSWORD", repr=False
     )
     az_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="AZ_RPC_TIMEOUT_SECONDS")
-    az_expected_chain: str = Field(default="micro", validation_alias="AZ_EXPECTED_CHAIN")
+    az_expected_chain: str = Field(default="main", validation_alias="AZ_EXPECTED_CHAIN")
 
     # Bitcoin RPC (used by `/v1/btc/*`)
     btc_rpc_url: str | None = Field(default=None, validation_alias="BTC_RPC_URL")
+    btc_rpc_cookie_file: str | None = Field(
+        default=None, validation_alias="BTC_RPC_COOKIE_FILE"
+    )
     btc_rpc_user: str | None = Field(default=None, validation_alias="BTC_RPC_USER")
     btc_rpc_password: SecretStr | None = Field(
         default=None, validation_alias="BTC_RPC_PASSWORD", repr=False
     )
     btc_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="BTC_RPC_TIMEOUT_SECONDS")
+
+    @field_validator("translator_log_path", mode="before")
+    @classmethod
+    def _blank_translator_log_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return str(value).strip() if isinstance(value, str) else value
+
+    @field_validator("translator_monitoring_base_url", mode="before")
+    @classmethod
+    def _blank_translator_monitoring_base_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return str(value).strip().rstrip("/") if isinstance(value, str) else value
 
     @model_validator(mode="before")
     @classmethod

@@ -1,6 +1,6 @@
 # azcoin-node-api (FastAPI)
 
-Production-ready skeleton for **v0.1**.
+Production-ready skeleton for **0.1.7**.
 
 This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic, money movement policies, or a database.
 
@@ -40,19 +40,22 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_USER**: AZCoin JSON-RPC username
 - **AZ_RPC_PASSWORD**: AZCoin JSON-RPC password
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
-- **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `micro`)
+- **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `main`)
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
-- **BTC_RPC_USER**: Bitcoin JSON-RPC username
-- **BTC_RPC_PASSWORD**: Bitcoin JSON-RPC password
+- **BTC_RPC_COOKIE_FILE**: Path to Bitcoin RPC cookie file (preferred; used when same-stack with bitcoind)
+- **BTC_RPC_USER** / **BTC_RPC_PASSWORD**: Fallback for remote or non-shared-filesystem deployments
 - **BTC_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
 - **AZ_RPC_PORT**: RPC port used by docker compose (default: `19332`)
 - **AZCOIN_CORE_IMAGE**: core docker image used by compose (default: `ghcr.io/satoshiware/azcoin-node:latest`)
 - **BTC_RPC_PORT**: Bitcoin RPC port used by docker compose (default: `8332`)
 - **BITCOIN_CORE_IMAGE**: bitcoin core docker image used by compose (default: `bitcoin/bitcoin-core:28.0`)
-- **AZ_SHARE_DB_PATH**: sqlite share ledger path (default: `/data/shares.db`)
-- **AZ_NODE_API_TOKEN**: optional Bearer token used by mining ingest/worker endpoints (default: empty)
+- **TRANSLATOR_LOG_PATH**: optional path to the translator process log file for observability endpoints (unset disables translator log reads)
+- **TRANSLATOR_LOG_DEFAULT_LINES**: default line count for `GET /v1/translator/logs/tail` when `lines` is omitted (default: `200`)
+- **TRANSLATOR_LOG_MAX_LINES**: maximum lines read from the log tail per request and upper bound for the `lines` query param (default: `1000`)
+- **TRANSLATOR_MONITORING_BASE_URL**: optional base URL of the translator's built-in monitoring HTTP server (for example `http://127.0.0.1:5000`). When unset, monitoring-backed routes return a stable `unconfigured` envelope instead of calling upstream.
+- **TRANSLATOR_MONITORING_TIMEOUT_SECS**: HTTP timeout for allowlisted monitoring GETs (default: `3`)
 
-Protected routes (currently `/v1/az/*`, `/v1/btc/*`, `/v1/tx/*`) require:
+Protected routes (currently `/v1/az/*`, `/v1/btc/*`, `/v1/node/*`, `/v1/tx/*`, `/v1/translator/*`) require:
 
 ```
 Authorization: Bearer <token>
@@ -61,6 +64,55 @@ Authorization: Bearer <token>
 Fail-closed rules:
 - If `APP_ENV=prod` then `AUTH_MODE` must be `jwt` (the app will refuse to start otherwise).
 - If `AUTH_MODE=dev_token` then `AZ_API_DEV_TOKEN` must be set (the app will refuse to start otherwise).
+
+## Bare-metal install (Ubuntu/Debian + systemd)
+
+Prerequisites:
+- Linux host with `systemd`
+- Python 3.11+ available as `python3`
+- Access to local AZCoin RPC and optional Bitcoin RPC
+
+Run the installer from the repo root:
+
+```bash
+cd /path/to/azcoin-node-api
+sudo bash deploy/linux/install.sh
+```
+
+The installer copies the app to `/opt/azcoin-node-api`, creates a virtualenv at `/opt/azcoin-node-api/.venv`, installs the systemd unit at `/etc/systemd/system/azcoin-node-api.service`, creates `/var/log/azcoin-node-api`, and seeds `/etc/azcoin-node-api/azcoin-node-api.env` if it does not already exist.
+
+Edit the env file before first start:
+
+```bash
+sudoedit /etc/azcoin-node-api/azcoin-node-api.env
+```
+
+For this branch, translator log and monitoring routes stay disabled until you set `TRANSLATOR_LOG_PATH` and/or `TRANSLATOR_MONITORING_BASE_URL`. A common testing choice is a translator log under `/var/log/azcoin-node-api/`.
+
+Service commands:
+
+```bash
+sudo systemctl start azcoin-node-api
+sudo systemctl stop azcoin-node-api
+sudo systemctl status azcoin-node-api
+sudo journalctl -u azcoin-node-api -f
+```
+
+Basic verification:
+
+```bash
+curl http://127.0.0.1:8080/v1/health
+
+curl \
+  -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8080/v1/az/node/info
+
+curl \
+  -H "Authorization: Bearer change-me" \
+  http://127.0.0.1:8080/v1/translator/status
+```
+
+Replace `change-me` with the `AZ_API_DEV_TOKEN` value from `/etc/azcoin-node-api/azcoin-node-api.env`. If translator monitoring is configured, you can also verify a live route such as `/v1/translator/runtime`.
 
 ## Running with Docker
 
@@ -74,21 +126,33 @@ Service name in compose: `azcoin-api`
 Notes:
 - `docker-compose.yml` starts `azcoin-core` on the external network `aznet` and wires the API to it via `AZ_RPC_URL=http://azcoin-core:${AZ_RPC_PORT}`.
 - The core RPC port is **not** published to the host; it is only reachable inside `aznet`.
-- `docker-compose.yml` also starts `bitcoin-core` and wires the API to it via `BTC_RPC_URL=http://bitcoin-core:${BTC_RPC_PORT}`.
+- `docker-compose.yml` also starts `bitcoin-core` and wires the API via `BTC_RPC_URL` and `BTC_RPC_COOKIE_FILE` (cookie auth; no manual password copying).
 
-## API endpoints (v0.1)
+## API endpoints (0.1.7)
 
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
 - **GET** `/v1/az/node/peers` (protected; calls AZCoin `getpeerinfo` and returns normalized peer list)
+- **GET** `/v1/az/mining/template/current` (protected; calls AZCoin `getblocktemplate` and returns minimal pool DTO: job_id, prev_hash, version, nbits, ntime, clean_jobs, height)
+- **GET** `/v1/az/mining/status` (protected; returns RPC connectivity, chain/blocks/headers, and template fetch health)
 - **GET** `/v1/az/mempool/info` (protected; calls AZCoin `getmempoolinfo` and returns normalized mempool stats)
 - **GET** `/v1/az/wallet/summary` (protected; calls AZCoin wallet RPC and returns normalized balances summary)
 - **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 - **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
-- **POST** `/v1/mining/share` (token-protected when `AZ_NODE_API_TOKEN` is set; records share events in sqlite)
-- **GET** `/v1/mining/workers` (requires `AZ_NODE_API_TOKEN` Bearer token when enabled)
-- **GET** `/v1/mining/workers/{name}` (requires `AZ_NODE_API_TOKEN` Bearer token when enabled)
+- **GET** `/v1/translator/status` (protected; merged health: log file panel plus optional live monitoring probe; overall `status` is `ok`, `degraded`, or `unconfigured`)
+- **GET** `/v1/translator/summary` (protected; log-backed status plus level/category counts over the log tail; query: `lines` default `500`, max `2000`)
+- **GET** `/v1/translator/runtime` (protected; live `GET .../api/v1/health` from the translator monitoring server, allowlisted only)
+- **GET** `/v1/translator/global` (protected; live `GET .../api/v1/global`)
+- **GET** `/v1/translator/upstream` (protected; live `GET .../api/v1/server`)
+- **GET** `/v1/translator/upstream/channels` (protected; live `GET .../api/v1/server/channels`)
+- **GET** `/v1/translator/downstreams` (protected; live `GET .../api/v1/sv1/clients`; query: `offset`, `limit`)
+- **GET** `/v1/translator/downstreams/{client_id}` (protected; live `GET .../api/v1/sv1/clients/{client_id}`)
+- **GET** `/v1/translator/logs/tail` (protected; newest-first normalized records from the translator log tail; query: `lines`, optional `level`, `contains`)
+- **GET** `/v1/translator/events/recent` (protected; newest-first normalized records; query: `limit`, optional `category`, `level`, `contains`)
+- **GET** `/v1/translator/errors/recent` (protected; newest-first `WARN`/`ERROR` records; query: `limit`)
+
+Log-backed translator routes reflect **historical** lines from `TRANSLATOR_LOG_PATH` (tail, incidents, aggregates). Monitoring-backed routes reflect **live** translator process state from `TRANSLATOR_MONITORING_BASE_URL` only on a fixed allowlist (no generic proxy). The API does not add config writes, restarts, Prometheus passthrough, or arbitrary upstream paths.
 
 For `/v1/az/wallet/transactions` with `since`:
 - Invalid `since` format returns `422` with `AZ_INVALID_SINCE`.
@@ -99,30 +163,67 @@ For `/v1/az/wallet/transactions` results:
 - `limit` is applied after normalization and sorting.
 
 For AZCoin protected endpoints:
-- The API expects AZCoin RPC to run on chain `micro` by default (override with `AZ_EXPECTED_CHAIN`).
+- The API expects AZCoin RPC to run on chain `main` by default (override with `AZ_EXPECTED_CHAIN`).
 - Chain mismatch returns `503` with `AZ_WRONG_CHAIN`.
 
-Mining share ingest example:
+### Translator log examples (observability)
 
-```bash
-curl -X POST "http://127.0.0.1:8080/v1/mining/share" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer testtoken-123" \
-  -d '{
-    "ts":1700000000,
-    "ts_ms":1700000000123,
-    "remote":"127.0.0.1",
-    "worker":"BenC",
-    "job_id":"job-42",
-    "difficulty":1,
-    "accepted":true,
-    "reason":null,
-    "extranonce2":"0a0b0c0d",
-    "ntime":"65a1bc2f",
-    "nonce":"deadbeef",
-    "version_bits":"20000000",
-    "accepted_unvalidated":true
-  }'
+Plain text line (Rust-style `target: message` after ISO timestamp and level):
+
+```text
+2026-04-10T21:02:48.715038Z INFO translator_sv2::downstream: Downstream connection established
+```
+
+JSON line (one JSON object per line):
+
+```json
+{"ts":"2026-04-10T21:05:00.000000Z","level":"WARN","target":"translator_sv2::upstream","message":"Upstream disconnected: reset by peer"}
+```
+
+Example **`GET /v1/translator/status`** response (merged log + monitoring):
+
+```json
+{
+  "status": "ok",
+  "configured": true,
+  "log_configured": true,
+  "monitoring_configured": true,
+  "log_status": "ok",
+  "monitoring_status": "ok",
+  "last_event_ts": "2026-04-10T21:02:48.715038Z",
+  "recent_error_count": 3,
+  "upstream_channels": 2,
+  "downstream_clients": 5,
+  "log_path": "/var/log/azcoin/translator.log"
+}
+```
+
+Example **`GET /v1/translator/global`** monitoring envelope when upstream is healthy:
+
+```json
+{
+  "status": "ok",
+  "configured": true,
+  "data": { "version": "1.0.0" },
+  "detail": null
+}
+```
+
+Example **`GET /v1/translator/summary?lines=500`** response:
+
+```json
+{
+  "status": "ok",
+  "configured": true,
+  "log_path": "/var/log/azcoin/translator.log",
+  "exists": true,
+  "readable": true,
+  "total_records_scanned": 387,
+  "counts_by_level": {"INFO": 320, "WARN": 12, "ERROR": 3},
+  "counts_by_category": {"downstream.connect": 20, "submit": 210, "difficulty.update": 5, "log": 152},
+  "last_event_ts": "2026-04-10T21:02:48.715038Z",
+  "recent_error_count": 15
+}
 ```
 
 ## Developer notes

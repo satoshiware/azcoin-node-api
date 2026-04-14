@@ -1,0 +1,102 @@
+﻿
+Path                                                                             LineNumber Line                                                                         
+----                                                                             ---------- ----                                                                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                                6 from fastapi import FastAPI                                                  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               11 from node_api.routes.v1.az_mempool import router as az_mempool_router        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               12 from node_api.routes.v1.az_mining import router as az_mining_router          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               13 from node_api.routes.v1.az_node import router as az_node_router              
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               14 from node_api.routes.v1.az_wallet import router as az_wallet_router          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               15 from node_api.routes.v1.btc_node import router as btc_node_router            
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               16 from node_api.routes.v1.btc_wallet import router as btc_wallet_router        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               17 from node_api.routes.v1.events import router as events_router                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               19     public_router as health_public_router,                                   
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               20     router as health_router,                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               22 from node_api.routes.v1.mining import router as mining_router                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               23 from node_api.routes.v1.node import router as node_router                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               35 def create_app() -> FastAPI:                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               38     from node_api.routers.events_recent import router as events_recent_router
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               54     app = FastAPI(                                                           
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               83     @app.on_event("startup")                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               97     app.include_router(events_recent_router)                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               98     app.include_router(health_public_router)                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                               99     app.include_router(health_router, prefix=settings.api_v1_prefix)         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              100     app.include_router(events_router, prefix=settings.api_v1_prefix)         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              101     app.include_router(az_node_router, prefix=settings.api_v1_prefix)        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              102     app.include_router(az_mining_router, prefix=settings.api_v1_prefix)      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              103     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)     
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              104     app.include_router(az_wallet_router, prefix=settings.api_v1_prefix)      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              105     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              106     app.include_router(btc_wallet_router, prefix=settings.api_v1_prefix)     
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              107     app.include_router(node_router, prefix=settings.api_v1_prefix)           
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              108     app.include_router(mining_router, prefix=settings.api_v1_prefix)         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\main.py                              111     app.include_router(tx_send.router, prefix=settings.api_v1_prefix)        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\auth\middleware.py                     5 from fastapi import Request                                                  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\auth\middleware.py                     6 from fastapi.responses import JSONResponse                                   
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routers\events_recent.py               3 from fastapi import APIRouter, Query                                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routers\events_recent.py               8 router = APIRouter(prefix="/v1/events", tags=["events"])                     
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routers\events_recent.py              11 @router.get("/recent")                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mempool.py                3 from fastapi import APIRouter, HTTPException                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mempool.py               12 router = APIRouter(prefix="/az/mempool", tags=["az-mempool"])                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mempool.py               49 @router.get("/info")                                                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mining.py                13 from fastapi import APIRouter, HTTPException                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mining.py                23 router = APIRouter(prefix="/az/mining", tags=["az-mining"])                  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mining.py               120 @router.get("/template/current", response_model=MiningTemplateResponse)      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_mining.py               147 @router.get("/status")                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_node.py                   5 from fastapi import APIRouter, HTTPException                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_node.py                  14 router = APIRouter(prefix="/az/node", tags=["az-node"])                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_node.py                  51 @router.get("/info")                                                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_node.py                  84 @router.get("/blockchain-info")                                              
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_node.py                 117 @router.get("/peers")                                                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_wallet.py                 6 from fastapi import APIRouter, HTTPException, Query                          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_wallet.py                16 router = APIRouter(prefix="/az/wallet", tags=["az-wallet"])                  
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_wallet.py               138 @router.get("/summary")                                                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\az_wallet.py               218 @router.get("/transactions")                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_node.py                  3 from fastapi import APIRouter, HTTPException                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_node.py                 12 router = APIRouter(prefix="/btc/node", tags=["btc-node"])                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_node.py                 15 @router.get("/info")                                                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_node.py                 38 @router.get("/blockchain-info")                                              
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_node.py                 47 @router.get("/peers")                                                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_wallet.py                5 from fastapi import APIRouter, HTTPException, Query                          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_wallet.py                7 router = APIRouter(prefix="/btc/wallet", tags=["btc-wallet"])                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_wallet.py               20 @router.get("/summary")                                                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\btc_wallet.py               25 @router.get("/transactions")                                                 
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\events.py                    7 from fastapi import APIRouter, Query, Request                                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\events.py                    8 from fastapi.responses import StreamingResponse                              
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\events.py                   12 router = APIRouter(prefix="/events", tags=["events"])                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\events.py                   15 @router.get("/recent-legacy")                                                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\events.py                   29 @router.get("/stream")                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                    5 from fastapi import APIRouter                                                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                    9 router = APIRouter(tags=["health"])                                          
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                   10 public_router = APIRouter(tags=["health"])                                   
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                   17 @router.get("/health")                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                   22 @public_router.get("/healthz")                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                   27 @public_router.get("/version")                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\health.py                   32 @router.get("/health/version")                                               
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\mining.py                    6 from fastapi import APIRouter, Depends, Header, HTTPException, Query         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\mining.py                   12 router = APIRouter(prefix="/mining", tags=["mining"])                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\mining.py                   55 @router.post("/share")                                                       
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\mining.py                   64 @router.get("/workers")                                                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\mining.py                   71 @router.get("/workers/{worker}")                                             
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\node.py                      3 from fastapi import APIRouter                                                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\node.py                      9 router = APIRouter(prefix="/node", tags=["node"])                            
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\node.py                     70 @router.get("/summary")                                                      
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\tx\send.py                   3 from fastapi import APIRouter, Depends, HTTPException                        
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\tx\send.py                  14 router = APIRouter(prefix="/tx", tags=["tx"])                                
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\routes\v1\tx\send.py                  41 @router.post("/send", response_model=TxSendResponse)                         
+C:\AZCoin\01_PROJECTS\azcoin-node-api\src\node_api\services\btc_route_helpers.py          5 from fastapi import HTTPException                                            
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_auth_smoke.py                            3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_az_mining.py                             6 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_az_readonly_endpoints.py                 6 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_bitcoin_rpc_auth.py                      9 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_btc_node_info_rpc.py                     3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_btc_wallet.py                            5 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_health.py                                3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_mining_share.py                          5 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_info_rpc.py                         3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_node_summary.py                          3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_protected.py                             3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_tx_send.py                               3 from fastapi.testclient import TestClient                                    
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_tx_send.py                              19     # Override the FastAPI dependency to avoid needing BTC_RPC_* env vars.   
+C:\AZCoin\01_PROJECTS\azcoin-node-api\tests\test_version.py                               3 from fastapi.testclient import TestClient                                    
+
+
