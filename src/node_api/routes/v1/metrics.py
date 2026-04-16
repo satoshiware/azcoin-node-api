@@ -156,7 +156,7 @@ def metrics_hashrate(
     connected_hashrates = [
         hashrate
         for item in normalized_items
-        if item.get("connected") is True
+        if item.get("connected") is not False
         for hashrate in [_hashrate_number(item.get("hashrate"))]
         if hashrate is not None
     ]
@@ -237,7 +237,7 @@ def metrics_shares(
     have_accepted = False
     have_rejected = False
     for item in normalized_items:
-        if item.get("connected") is not True:
+        if item.get("connected") is False:
             continue
         accepted = _hashrate_number(item.get("accepted_shares"))
         rejected = _hashrate_number(item.get("rejected_shares"))

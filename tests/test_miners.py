@@ -200,6 +200,59 @@ def test_miners_partial_record_normalization_degraded(monkeypatch):
     ]
 
 
+def test_miners_missing_connection_evidence_normalizes_to_none_and_partial(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import miners as miners_module
+
+    monkeypatch.setattr(
+        miners_module,
+        "_fetch_translator_miners_envelope",
+        lambda: {
+            "status": "ok",
+            "data": {
+                "clients": [
+                    {
+                        "miner_id": "miner-unknown",
+                        "worker_name": "worker-a",
+                        "hashrate": 42.0,
+                    }
+                ]
+            },
+            "detail": None,
+        },
+        raising=True,
+    )
+
+    r = client.get("/v1/miners", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["status"] == "degraded"
+    assert body["detail"] == {"partial_records": 1}
+    assert body["data"]["items"] == [
+        {
+            "miner_id": "miner-unknown",
+            "worker_name": "worker-a",
+            "user_identity": None,
+            "client_ip": None,
+            "channel_id": None,
+            "connected": None,
+            "hashrate": 42.0,
+            "target_hex": None,
+            "extranonce1_hex": None,
+            "extranonce2_len": None,
+            "version_rolling_mask": None,
+            "version_rolling_min_bit": None,
+            "accepted_shares": None,
+            "rejected_shares": None,
+            "best_diff": None,
+            "last_share_ts": None,
+            "connected_since_ts": None,
+        }
+    ]
+
+
 def test_miners_pagination_sort_and_status_filter(monkeypatch):
     client = _make_client(monkeypatch)
 
@@ -254,3 +307,12 @@ def test_miners_pagination_sort_and_status_filter(monkeypatch):
     assert len(body["data"]["items"]) == 1
     assert body["data"]["items"][0]["miner_id"] == "m1"
     assert body["data"]["items"][0]["worker_name"] == "charlie"
+
+
+def test_miners_explicit_connection_state_mappings_unchanged() -> None:
+    from node_api.routes.v1 import miners as miners_module
+
+    assert miners_module._connected_from_record({"connected": True}) == (True, True)
+    assert miners_module._connected_from_record({"connected": False}) == (False, True)
+    assert miners_module._connected_from_record({"status": "active"}) == (True, True)
+    assert miners_module._connected_from_record({"status": "offline"}) == (False, True)

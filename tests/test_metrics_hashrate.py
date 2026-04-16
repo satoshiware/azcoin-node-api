@@ -59,6 +59,41 @@ def test_metrics_hashrate_aggregate_current_single_point(monkeypatch):
     assert datetime.fromisoformat(body["data"]["series"][0]["ts"].replace("Z", "+00:00"))
 
 
+def test_metrics_hashrate_aggregate_includes_unknown_connection_rows(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import metrics as metrics_module
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_normalize_items",
+        lambda: (
+            [
+                {"miner_id": "m1", "connected": None, "hashrate": 10.5},
+                {"miner_id": "m2", "connected": True, "hashrate": 20.0},
+                {"miner_id": "m3", "connected": False, "hashrate": 30.0},
+            ],
+            "ok",
+        ),
+        raising=True,
+    )
+
+    r = client.get(
+        "/v1/metrics/hashrate?window=1h&bucket=5m",
+        headers={"Authorization": "Bearer testtoken"},
+    )
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["data"]["series"] == [
+        {
+            "ts": body["data"]["series"][0]["ts"],
+            "hashrate": 30.5,
+        }
+    ]
+
+
 def test_metrics_hashrate_miner_specific_current_single_point(monkeypatch):
     client = _make_client(monkeypatch)
 

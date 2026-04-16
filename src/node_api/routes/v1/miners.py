@@ -95,7 +95,7 @@ def _first_value(record: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _connected_from_record(record: dict[str, Any]) -> tuple[bool, bool]:
+def _connected_from_record(record: dict[str, Any]) -> tuple[bool | None, bool]:
     for key in ("connected", "is_connected"):
         value = record.get(key)
         if isinstance(value, bool):
@@ -115,7 +115,7 @@ def _connected_from_record(record: dict[str, Any]) -> tuple[bool, bool]:
     if connected_since_ts is not None:
         return True, False
 
-    return False, False
+    return None, False
 
 
 def _normalize_record(record: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:

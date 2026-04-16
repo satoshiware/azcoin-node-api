@@ -157,7 +157,7 @@ def _translate_translator_aggregates() -> tuple[dict[str, Any], bool, bool]:
             continue
         normalized_items.append(normalized)
 
-    connected_items = [item for item in normalized_items if item.get("connected") is True]
+    connected_items = [item for item in normalized_items if item.get("connected") is not False]
     connected_hashrates = [
         hashrate
         for item in connected_items

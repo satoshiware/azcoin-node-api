@@ -413,6 +413,87 @@ def test_dashboard_summary_disconnected_miners_excluded(monkeypatch):
     }
 
 
+def test_dashboard_summary_unknown_connection_rows_contribute(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import dashboard as dashboard_module
+
+    monkeypatch.setattr(
+        dashboard_module,
+        "_fetch_translator_monitoring_snapshot",
+        _healthy_translator_snapshot,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        dashboard_module,
+        "_fetch_translator_miners_envelope",
+        lambda: {
+            "status": "ok",
+            "data": {
+                "clients": [
+                    {
+                        "miner_id": "unknown-1",
+                        "hashrate": 11.0,
+                        "accepted_shares": 3,
+                        "rejected_shares": 1,
+                        "best_diff": 90.0,
+                    },
+                    {
+                        "miner_id": "connected-2",
+                        "connected": True,
+                        "hashrate": 9.0,
+                        "accepted_shares": 2,
+                        "rejected_shares": 0,
+                        "best_diff": 120.0,
+                    },
+                    {
+                        "miner_id": "disconnected-1",
+                        "connected": False,
+                        "hashrate": 9999.0,
+                        "accepted_shares": 999,
+                        "rejected_shares": 999,
+                        "best_diff": 99999.0,
+                    },
+                ]
+            },
+            "detail": None,
+        },
+        raising=True,
+    )
+    monkeypatch.setattr(
+        dashboard_module,
+        "_fetch_node_status_envelope",
+        _healthy_node_envelope,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        dashboard_module,
+        "_fetch_services_status_envelope",
+        _healthy_services_envelope,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        dashboard_module,
+        "_fetch_alerts_envelope",
+        _healthy_alerts_envelope,
+        raising=True,
+    )
+
+    r = client.get("/v1/dashboard/summary", headers={"Authorization": "Bearer testtoken"})
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["detail"] is None
+    assert body["data"]["translator"]["total_hashrate"] == 20.0
+    assert body["data"]["shares"] == {
+        "submitted": 6,
+        "acknowledged": 5,
+        "rejected": 1,
+        "best_diff": 120.0,
+    }
+
+
 def test_dashboard_summary_partial_aggregate_availability(monkeypatch):
     client = _make_client(monkeypatch)
 

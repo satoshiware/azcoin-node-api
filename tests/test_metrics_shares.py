@@ -69,6 +69,55 @@ def test_metrics_shares_aggregate_current_single_point(monkeypatch):
     }
 
 
+def test_metrics_shares_aggregate_includes_unknown_connection_rows(monkeypatch):
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import metrics as metrics_module
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_normalize_items",
+        lambda: (
+            [
+                {
+                    "miner_id": "m1",
+                    "connected": None,
+                    "accepted_shares": 10,
+                    "rejected_shares": 2,
+                },
+                {
+                    "miner_id": "m2",
+                    "connected": True,
+                    "accepted_shares": 5,
+                    "rejected_shares": 1,
+                },
+                {
+                    "miner_id": "m3",
+                    "connected": False,
+                    "accepted_shares": 7,
+                    "rejected_shares": 3,
+                },
+            ],
+            "ok",
+        ),
+        raising=True,
+    )
+
+    r = client.get(
+        "/v1/metrics/shares?window=1h&bucket=5m",
+        headers={"Authorization": "Bearer testtoken"},
+    )
+    assert r.status_code == 200
+
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["data"]["series"] == {
+        "submitted": [{"ts": body["data"]["series"]["submitted"][0]["ts"], "value": 18}],
+        "accepted": [{"ts": body["data"]["series"]["accepted"][0]["ts"], "value": 15}],
+        "rejected": [{"ts": body["data"]["series"]["rejected"][0]["ts"], "value": 3}],
+    }
+
+
 def test_metrics_shares_miner_specific_current_single_point(monkeypatch):
     client = _make_client(monkeypatch)
 
