@@ -9,18 +9,23 @@ from fastapi import FastAPI
 from node_api.auth.middleware import AuthConfig, JWTAuthMiddleware
 from node_api.auth.validator import RejectAllValidator, StaticTokenValidator
 from node_api.logging import configure_logging
+from node_api.routes.v1.alerts import router as alerts_router
 from node_api.routes.v1.az_mempool import router as az_mempool_router
 from node_api.routes.v1.az_mining import router as az_mining_router
 from node_api.routes.v1.az_node import router as az_node_router
 from node_api.routes.v1.az_wallet import router as az_wallet_router
 from node_api.routes.v1.btc_node import router as btc_node_router
 from node_api.routes.v1.btc_wallet import router as btc_wallet_router
+from node_api.routes.v1.dashboard import router as dashboard_router
 from node_api.routes.v1.events import router as events_router
 from node_api.routes.v1.health import (
     public_router as health_public_router,
     router as health_router,
 )
+from node_api.routes.v1.metrics import router as metrics_router
+from node_api.routes.v1.miners import router as miners_router
 from node_api.routes.v1.node import router as node_router
+from node_api.routes.v1.services import router as services_router
 from node_api.routes.v1.translator import router as translator_router
 from node_api.routes.v1.tx import send as tx_send
 from node_api.services.event_store import EventStore
@@ -40,6 +45,10 @@ def create_app() -> FastAPI:
     openapi_tags = [
         {"name": "health", "description": "Service liveness/readiness endpoints."},
         {"name": "events", "description": "Recent event stream endpoints."},
+        {"name": "alerts", "description": "Operator alert endpoints (protected)."},
+        {"name": "dashboard", "description": "Dashboard summary endpoint (protected)."},
+        {"name": "metrics", "description": "Metrics chart endpoints (protected)."},
+        {"name": "miners", "description": "Translator miner/session table endpoint (protected)."},
         {"name": "az-node", "description": "AZCoin node endpoints (protected)."},
         {
             "name": "az-mining",
@@ -50,6 +59,7 @@ def create_app() -> FastAPI:
         {"name": "btc-node", "description": "Bitcoin node endpoints (protected)."},
         {"name": "btc-wallet", "description": "Bitcoin wallet endpoints (protected)."},
         {"name": "node", "description": "Multi-node summary endpoints (protected)."},
+        {"name": "services", "description": "Local service status endpoints (protected)."},
         {"name": "tx", "description": "Transaction endpoints (protected)."},
         {"name": "translator", "description": "Translator log observability (protected)."},
     ]
@@ -64,9 +74,14 @@ def create_app() -> FastAPI:
         JWTAuthMiddleware,
         config=AuthConfig(
             protected_path_prefixes=(
+                f"{settings.api_v1_prefix}/alerts",
                 f"{settings.api_v1_prefix}/az",
                 f"{settings.api_v1_prefix}/btc",
+                f"{settings.api_v1_prefix}/dashboard",
+                f"{settings.api_v1_prefix}/metrics",
+                f"{settings.api_v1_prefix}/miners",
                 f"{settings.api_v1_prefix}/node",
+                f"{settings.api_v1_prefix}/services",
                 f"{settings.api_v1_prefix}/tx",
                 f"{settings.api_v1_prefix}/translator",
             ),
@@ -103,6 +118,10 @@ def create_app() -> FastAPI:
     app.include_router(health_public_router)
     app.include_router(health_router, prefix=settings.api_v1_prefix)
     app.include_router(events_router, prefix=settings.api_v1_prefix)
+    app.include_router(alerts_router, prefix=settings.api_v1_prefix)
+    app.include_router(dashboard_router, prefix=settings.api_v1_prefix)
+    app.include_router(metrics_router, prefix=settings.api_v1_prefix)
+    app.include_router(miners_router, prefix=settings.api_v1_prefix)
     app.include_router(az_node_router, prefix=settings.api_v1_prefix)
     app.include_router(az_mining_router, prefix=settings.api_v1_prefix)
     app.include_router(az_mempool_router, prefix=settings.api_v1_prefix)
@@ -110,6 +129,7 @@ def create_app() -> FastAPI:
     app.include_router(btc_node_router, prefix=settings.api_v1_prefix)
     app.include_router(btc_wallet_router, prefix=settings.api_v1_prefix)
     app.include_router(node_router, prefix=settings.api_v1_prefix)
+    app.include_router(services_router, prefix=settings.api_v1_prefix)
     app.include_router(translator_router, prefix=settings.api_v1_prefix)
 
     # Keep versioning centralized so changing API_V1_PREFIX updates all routes.
