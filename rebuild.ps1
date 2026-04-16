@@ -1,9 +1,9 @@
 git status
 git add -A
-git commit -m "Major update. Added bare metal linux install removed pool monitoring and added new translator monitoring 0.1.7"
-git tag v0.1.7
+git commit -m "Updating fixes to expose more translator data. 0.1.7-r1"
+git tag v0.1.7-r1
 git push origin main
-git push origin v0.1.7
+git push origin v0.1.7-r1
 
 $SHA = (git rev-parse --short HEAD).Trim()
 
