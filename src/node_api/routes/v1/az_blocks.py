@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -18,6 +18,24 @@ router = APIRouter(prefix="/az/blocks", tags=["az-blocks"])
 # into shared modules; this route is the only place we convert coin->sats.
 _COIN = Decimal("100000000")
 _MATURITY_CONFIRMATIONS = 100
+
+# Ownership match labels. The combined value is emitted when at least one
+# coinbase output matched by address AND at least one matched by scriptPubKey
+# (the two matches may be on the same output or on different outputs).
+_OWNERSHIP_MATCH_ADDRESS = "coinbase_output_address"
+_OWNERSHIP_MATCH_SCRIPT = "coinbase_script_pub_key"
+_OWNERSHIP_MATCH_BOTH = "coinbase_output_address_and_script_pub_key"
+
+# Hard cap on how many blocks a single time-window query may walk. Bitcoin/
+# AZCoin block headers don't carry a back-index by time, so a time-windowed
+# request must scan tip -> genesis (or until early termination). Without a cap,
+# a tight window deep in the past would walk the whole chain. 5000 is roughly
+# 7 weeks of 10-minute blocks; queries that need more must be split client-side.
+_MAX_TIME_RANGE_SCAN_BLOCKS = 5000
+
+# String describing the time interval semantics; echoed in `time_filter` so
+# clients (and ledger code) don't have to encode the rule separately.
+_TIME_INTERVAL_RULE = "start_time <= selected_time < end_time"
 
 
 def _get_az_rpc() -> AzcoinRpcClient:
@@ -62,6 +80,109 @@ def _raise_invalid_payload(message: str) -> None:
             "message": f"AZCoin RPC payload invalid: {message}",
         },
     )
+
+
+def _raise_ownership_not_configured() -> None:
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "AZ_REWARD_OWNERSHIP_NOT_CONFIGURED",
+            "message": "Reward ownership matching is not configured.",
+        },
+    )
+
+
+def _raise_time_range_too_large() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "AZ_REWARD_TIME_RANGE_TOO_LARGE",
+            "message": (
+                "Time range scan exceeded the per-request limit of "
+                f"{_MAX_TIME_RANGE_SCAN_BLOCKS} blocks. Narrow the interval, "
+                "use time_field=mediantime to enable early termination, or "
+                "split the request client-side."
+            ),
+        },
+    )
+
+
+def _raise_time_range_incomplete() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "AZ_REWARD_TIME_RANGE_INCOMPLETE",
+            "message": "start_time and end_time must both be provided.",
+        },
+    )
+
+
+def _raise_time_range_invalid() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "AZ_REWARD_TIME_RANGE_INVALID",
+            "message": "end_time must be strictly greater than start_time.",
+        },
+    )
+
+
+def _parse_ownership_addresses(raw: str | None) -> frozenset[str]:
+    """Comma-separated addresses, whitespace-trimmed, empty entries dropped, exact match."""
+    if not raw:
+        return frozenset()
+    return frozenset(piece.strip() for piece in raw.split(",") if piece.strip())
+
+
+def _parse_ownership_scripts(raw: str | None) -> frozenset[str]:
+    """Comma-separated scriptPubKey hex strings; case-insensitive match (lowercased)."""
+    if not raw:
+        return frozenset()
+    return frozenset(piece.strip().lower() for piece in raw.split(",") if piece.strip())
+
+
+def _classify_block_ownership(
+    outputs: list[dict[str, Any]],
+    owned_addresses: frozenset[str],
+    owned_scripts: frozenset[str],
+) -> tuple[bool, list[int], str | None]:
+    """
+    Inspect normalized coinbase outputs and report:
+        (is_owned_reward, matched_output_indexes, ownership_match)
+
+    An output matches if its `address` is in `owned_addresses` OR its
+    `script_pub_key_hex` (compared lowercased) is in `owned_scripts`.
+    """
+    matched_indexes: list[int] = []
+    had_address_match = False
+    had_script_match = False
+
+    for output in outputs:
+        address = output.get("address")
+        script_hex = output.get("script_pub_key_hex")
+        addr_match = isinstance(address, str) and address in owned_addresses
+        script_match = (
+            isinstance(script_hex, str) and script_hex.lower() in owned_scripts
+        )
+        if addr_match or script_match:
+            index = output.get("index")
+            if isinstance(index, int) and not isinstance(index, bool):
+                matched_indexes.append(index)
+            if addr_match:
+                had_address_match = True
+            if script_match:
+                had_script_match = True
+
+    if had_address_match and had_script_match:
+        ownership_match: str | None = _OWNERSHIP_MATCH_BOTH
+    elif had_address_match:
+        ownership_match = _OWNERSHIP_MATCH_ADDRESS
+    elif had_script_match:
+        ownership_match = _OWNERSHIP_MATCH_SCRIPT
+    else:
+        ownership_match = None
+
+    return bool(matched_indexes), matched_indexes, ownership_match
 
 
 def _coin_to_sats_strict(value: Any) -> int:
@@ -204,16 +325,120 @@ def _build_block_entry(height: int, block: dict[str, Any]) -> dict[str, Any]:
         "is_mature": is_mature,
         "blocks_until_mature": blocks_until_mature,
         "maturity_status": _maturity_status(confirmations),
+        # The chain height at which this coinbase first becomes spendable
+        # (i.e. when its confirmations reach _MATURITY_CONFIRMATIONS). Derived
+        # purely from `height` so it is independent of `confirmations`: an
+        # immature, mature, or even orphan block all report the same value.
+        "maturity_height": height + _MATURITY_CONFIRMATIONS - 1,
         "coinbase_txid": coinbase_tx.get("txid"),
         "coinbase_total_sats": coinbase_total_sats,
         "outputs": outputs,
     }
 
 
+def _fetch_classified_block_entry(
+    rpc: AzcoinRpcClient,
+    height: int,
+    owned_addresses: frozenset[str],
+    owned_scripts: frozenset[str],
+) -> dict[str, Any]:
+    """
+    Fetch a single block by height, run strict coinbase validation, attach
+    ownership classification fields, and return the full per-block entry.
+
+    AzcoinRpcError / AzcoinRpcWrongChainError raised by the RPC client are
+    intentionally propagated; the caller's outer try/except converts them to
+    the route's standard 502/503 responses.
+    """
+    blockhash = rpc.call("getblockhash", [height])
+    if not isinstance(blockhash, str):
+        _raise_az_unavailable()
+    block = rpc.call("getblock", [blockhash, 2])
+    if not isinstance(block, dict):
+        _raise_az_unavailable()
+    try:
+        entry = _build_block_entry(height, block)
+    except ValueError as exc:
+        _raise_invalid_payload(f"block {height}: {exc}")
+    is_owned, matched_indexes, ownership_match = _classify_block_ownership(
+        entry["outputs"], owned_addresses, owned_scripts
+    )
+    entry["is_owned_reward"] = is_owned
+    entry["matched_output_indexes"] = matched_indexes
+    entry["ownership_match"] = ownership_match
+    return entry
+
+
+def _selected_block_time(
+    entry: dict[str, Any], time_field: Literal["time", "mediantime"]
+) -> int | None:
+    """Return the int time for the active filter mode, or None when absent/non-int."""
+    value = entry.get(time_field)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
 @router.get("/rewards")
 def block_rewards(
     limit: int = Query(default=50, ge=1, le=200),
+    owned_only: bool = Query(
+        default=True,
+        description=(
+            "When true (default), return only blocks whose coinbase paid a "
+            "configured ownership address or scriptPubKey hex. When false, "
+            "return every recent chain block with ownership classification "
+            "fields populated for inspection."
+        ),
+    ),
+    start_time: int | None = Query(
+        default=None,
+        ge=0,
+        description=(
+            "Inclusive lower bound (Unix seconds) for the selected block time "
+            "field. Must be supplied together with end_time; otherwise the "
+            "endpoint falls back to limit-based scanning."
+        ),
+    ),
+    end_time: int | None = Query(
+        default=None,
+        description=(
+            "Exclusive upper bound (Unix seconds) for the selected block time "
+            "field. Must be supplied together with start_time and must be "
+            "strictly greater than start_time."
+        ),
+    ),
+    time_field: Literal["time", "mediantime"] = Query(
+        default="time",
+        description=(
+            "Which block timestamp drives interval filtering: the block "
+            "header `time` (default) or BIP113 `mediantime` (monotonic on "
+            "the active chain; enables early scan termination)."
+        ),
+    ),
 ) -> dict[str, Any]:
+    # ----- Phase 1: cross-field validation of time-window params ------------
+    # `Query(ge=0)` already covers start_time>=0 and Literal already covers
+    # time_field. The remaining rules ("both or neither" and end>start) are
+    # cross-field, which Query can't express, so we raise 422 here with our
+    # standard {code, message} envelope used elsewhere in this module.
+    time_window_mode = start_time is not None or end_time is not None
+    if time_window_mode and (start_time is None or end_time is None):
+        _raise_time_range_incomplete()
+    if time_window_mode and end_time is not None and start_time is not None:
+        if end_time <= start_time:
+            _raise_time_range_invalid()
+
+    # ----- Phase 2: ownership config + 503 fail-closed ----------------------
+    settings = get_settings()
+    owned_addresses = _parse_ownership_addresses(settings.az_reward_ownership_addresses)
+    owned_scripts = _parse_ownership_scripts(settings.az_reward_ownership_script_pubkeys)
+    ownership_configured = bool(owned_addresses or owned_scripts)
+
+    if owned_only and not ownership_configured:
+        _raise_ownership_not_configured()
+
+    # ----- Phase 3: fetch tip metadata --------------------------------------
     rpc = _get_az_rpc()
 
     try:
@@ -232,21 +457,58 @@ def block_rewards(
     if not isinstance(tip_height, int) or isinstance(tip_height, bool) or tip_height < 0:
         _raise_az_unavailable()
 
-    # Walk tip -> genesis, capped by `limit` and bounded by height 0.
-    lowest = max(0, tip_height - limit + 1)
     blocks: list[dict[str, Any]] = []
+
+    # ----- Phase 4: walk blocks ---------------------------------------------
+    # Two scan modes:
+    #   * Time-window: walk tip -> genesis, capped by _MAX_TIME_RANGE_SCAN_BLOCKS,
+    #     with optional early termination for time_field=="mediantime".
+    #   * Limit-based (legacy): walk tip -> tip-limit+1.
+    # Strict coinbase validation runs unconditionally on every fetched block
+    # so callers can never receive a partial/zeroed reward total.
     try:
-        for height in range(tip_height, lowest - 1, -1):
-            blockhash = rpc.call("getblockhash", [height])
-            if not isinstance(blockhash, str):
-                _raise_az_unavailable()
-            block = rpc.call("getblock", [blockhash, 2])
-            if not isinstance(block, dict):
-                _raise_az_unavailable()
-            try:
-                blocks.append(_build_block_entry(height, block))
-            except ValueError as exc:
-                _raise_invalid_payload(f"block {height}: {exc}")
+        if time_window_mode:
+            assert start_time is not None and end_time is not None  # narrowed for type checkers
+            scanned = 0
+            for height in range(tip_height, -1, -1):
+                scanned += 1
+                if scanned > _MAX_TIME_RANGE_SCAN_BLOCKS:
+                    _raise_time_range_too_large()
+                entry = _fetch_classified_block_entry(
+                    rpc, height, owned_addresses, owned_scripts
+                )
+                selected_time = _selected_block_time(entry, time_field)
+                in_window = (
+                    selected_time is not None
+                    and start_time <= selected_time < end_time
+                )
+                ownership_passes = entry["is_owned_reward"] or not owned_only
+                if in_window and ownership_passes:
+                    blocks.append(entry)
+                # Early termination is only safe for `mediantime`: BIP113
+                # mediantime is non-decreasing on the active chain, so once
+                # we observe a block strictly below start_time no earlier
+                # block can possibly fall back inside the window. Header
+                # `time` carries up to ~2h drift per BIP113 and is therefore
+                # not safe to short-circuit on.
+                if (
+                    time_field == "mediantime"
+                    and selected_time is not None
+                    and selected_time < start_time
+                ):
+                    break
+        else:
+            lowest = max(0, tip_height - limit + 1)
+            # `limit` is a fetch cap, not a result cap; when `owned_only=true`
+            # the response can contain fewer blocks than `limit` if some are
+            # unowned.
+            for height in range(tip_height, lowest - 1, -1):
+                entry = _fetch_classified_block_entry(
+                    rpc, height, owned_addresses, owned_scripts
+                )
+                if owned_only and not entry["is_owned_reward"]:
+                    continue
+                blocks.append(entry)
     except AzcoinRpcWrongChainError as exc:
         _raise_wrong_chain(exc.expected_chain)
     except AzcoinRpcError:
@@ -257,5 +519,13 @@ def block_rewards(
         "tip_hash": tip_hash if isinstance(tip_hash, str) else None,
         "chain": chain if isinstance(chain, str) else None,
         "maturity_confirmations": _MATURITY_CONFIRMATIONS,
+        "owned_only": owned_only,
+        "ownership_configured": ownership_configured,
+        "time_filter": {
+            "start_time": start_time,
+            "end_time": end_time,
+            "time_field": time_field,
+            "interval_rule": _TIME_INTERVAL_RULE,
+        },
         "blocks": blocks,
     }

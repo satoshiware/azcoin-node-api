@@ -41,6 +41,8 @@ Copy `.env.example` to `.env`.
 - **AZ_RPC_PASSWORD**: AZCoin JSON-RPC password
 - **AZ_RPC_TIMEOUT_SECONDS**: RPC timeout seconds (default: `5`)
 - **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `main`)
+- **AZ_REWARD_OWNERSHIP_ADDRESSES**: comma-separated list of coinbase payout addresses owned by this node, used by `GET /v1/az/blocks/rewards` to classify blocks as owned. Whitespace is trimmed and empty entries are dropped; addresses match exactly. Required (along with `AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS` or both) when calling `/v1/az/blocks/rewards?owned_only=true`.
+- **AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS**: comma-separated list of coinbase `scriptPubKey` hex strings owned by this node. Whitespace is trimmed, empty entries are dropped, and matching is case-insensitive.
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
 - **BTC_RPC_COOKIE_FILE**: Path to Bitcoin RPC cookie file (preferred; used when same-stack with bitcoind)
 - **BTC_RPC_USER** / **BTC_RPC_PASSWORD**: Fallback for remote or non-shared-filesystem deployments

@@ -11,7 +11,14 @@ from node_api.settings import get_settings
 AUTH_HEADER = {"Authorization": "Bearer testtoken"}
 
 
-def _make_client(monkeypatch) -> TestClient:
+def _make_client(monkeypatch, **extra_env: str) -> TestClient:
+    """
+    Build a TestClient with the standard dev auth + AZ RPC env wired up.
+
+    `extra_env` is forwarded to monkeypatch.setenv so individual tests can
+    layer in extra config (e.g. AZ_REWARD_OWNERSHIP_ADDRESSES) without each
+    test having to re-set the baseline env.
+    """
     monkeypatch.setenv("APP_ENV", "dev")
     monkeypatch.setenv("AUTH_MODE", "dev_token")
     monkeypatch.setenv("AZ_API_DEV_TOKEN", "testtoken")
@@ -19,6 +26,8 @@ def _make_client(monkeypatch) -> TestClient:
     monkeypatch.setenv("AZ_RPC_USER", "user")
     monkeypatch.setenv("AZ_RPC_PASSWORD", "pass")
     monkeypatch.setenv("AZ_EXPECTED_CHAIN", "main")
+    for key, value in extra_env.items():
+        monkeypatch.setenv(key, value)
     get_settings.cache_clear()
 
     from node_api import main as main_module
@@ -76,6 +85,35 @@ def _install_single_block_mock(monkeypatch, block: dict[str, Any], tip_height: i
     monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
 
 
+def _install_multi_block_mock(
+    monkeypatch, blocks_by_height: dict[int, dict[str, Any]], tip_height: int
+) -> None:
+    """RPC mock for tests that walk more than one block from tip downward."""
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    tip_hash = blocks_by_height[tip_height]["hash"]
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        if method == "getblockchaininfo":
+            return {
+                "chain": "main",
+                "blocks": tip_height,
+                "bestblockhash": tip_hash,
+            }
+        if method == "getblockhash":
+            return blocks_by_height[params[0]]["hash"]
+        if method == "getblock":
+            blockhash, verbosity = params
+            assert verbosity == 2
+            for block in blocks_by_height.values():
+                if block["hash"] == blockhash:
+                    return block
+            raise AssertionError(f"unknown blockhash: {blockhash}")
+        raise AssertionError(f"unexpected method: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+
 def test_az_blocks_rewards_requires_auth(monkeypatch):
     client = _make_client(monkeypatch)
     r = client.get("/v1/az/blocks/rewards")
@@ -84,8 +122,6 @@ def test_az_blocks_rewards_requires_auth(monkeypatch):
 
 def test_az_blocks_rewards_success(monkeypatch):
     client = _make_client(monkeypatch)
-
-    from node_api.routes.v1 import az_blocks as az_blocks_module
 
     tip_height = 150
     fake_blocks = {
@@ -122,37 +158,19 @@ def test_az_blocks_rewards_success(monkeypatch):
             ],
         ),
     }
-    tip_hash_value = fake_blocks[tip_height]["hash"]
 
-    def fake_call(self, method: str, params=None):  # noqa: ANN001
-        if method == "getblockchaininfo":
-            return {
-                "chain": "main",
-                "blocks": tip_height,
-                "bestblockhash": tip_hash_value,
-            }
-        if method == "getblockhash":
-            height = params[0]
-            return fake_blocks[height]["hash"]
-        if method == "getblock":
-            blockhash, verbosity = params
-            assert verbosity == 2
-            for block in fake_blocks.values():
-                if block["hash"] == blockhash:
-                    return block
-            raise AssertionError(f"unknown blockhash: {blockhash}")
-        raise AssertionError(f"unexpected method: {method}")
+    _install_multi_block_mock(monkeypatch, fake_blocks, tip_height=tip_height)
 
-    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
-
-    r = client.get("/v1/az/blocks/rewards?limit=2", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=2&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     body = r.json()
 
     assert body["tip_height"] == tip_height
-    assert body["tip_hash"] == tip_hash_value
+    assert body["tip_hash"] == fake_blocks[tip_height]["hash"]
     assert body["chain"] == "main"
     assert body["maturity_confirmations"] == 100
+    assert body["owned_only"] is False
+    assert body["ownership_configured"] is False
     assert [b["height"] for b in body["blocks"]] == [150, 149]
 
     first = body["blocks"][0]
@@ -163,6 +181,12 @@ def test_az_blocks_rewards_success(monkeypatch):
     assert first["is_mature"] is False
     assert first["blocks_until_mature"] == 99
     assert first["maturity_status"] == "immature"
+    # maturity_height = height + maturity_confirmations - 1
+    # 150 + 100 - 1 = 249.
+    assert first["maturity_height"] == 249
+    assert first["is_owned_reward"] is False
+    assert first["matched_output_indexes"] == []
+    assert first["ownership_match"] is None
     assert first["coinbase_txid"] == fake_blocks[150]["tx"][0]["txid"]
     assert first["coinbase_total_sats"] == 5_000_000_000
     assert first["outputs"] == [
@@ -179,6 +203,8 @@ def test_az_blocks_rewards_success(monkeypatch):
     assert second["confirmations"] == 2
     assert second["blocks_until_mature"] == 98
     assert second["is_mature"] is False
+    assert second["maturity_height"] == 248
+    assert second["is_owned_reward"] is False
 
 
 def test_az_blocks_rewards_decimal_precision_exact_for_0_1_and_6_15(monkeypatch):
@@ -203,7 +229,7 @@ def test_az_blocks_rewards_decimal_precision_exact_for_0_1_and_6_15(monkeypatch)
 
     _install_single_block_mock(monkeypatch, block, tip_height=10)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
 
@@ -242,7 +268,7 @@ def test_az_blocks_rewards_sums_multiple_valid_outputs_exactly(monkeypatch):
 
     _install_single_block_mock(monkeypatch, block, tip_height=42)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
 
@@ -289,7 +315,7 @@ def test_az_blocks_rewards_missing_address_with_script_fields_ok(monkeypatch):
 
     _install_single_block_mock(monkeypatch, block, tip_height=200)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
 
@@ -331,7 +357,7 @@ def test_az_blocks_rewards_invalid_coinbase_value_returns_invalid_payload(
 
     _install_single_block_mock(monkeypatch, block, tip_height=7)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 502, f"{label}: expected 502, got {r.status_code}"
     assert r.json()["detail"]["code"] == "AZ_RPC_INVALID_PAYLOAD"
 
@@ -351,7 +377,7 @@ def test_az_blocks_rewards_sub_satoshi_precision_fails(monkeypatch):
 
     _install_single_block_mock(monkeypatch, block, tip_height=3)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 502
     detail = r.json()["detail"]
     assert detail["code"] == "AZ_RPC_INVALID_PAYLOAD"
@@ -398,7 +424,7 @@ def test_az_blocks_rewards_malformed_coinbase_returns_invalid_payload(
 
     _install_single_block_mock(monkeypatch, malformed_block, tip_height=1)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 502, f"{label}: expected 502, got {r.status_code}"
     assert r.json()["detail"]["code"] == "AZ_RPC_INVALID_PAYLOAD"
 
@@ -414,7 +440,7 @@ def test_az_blocks_rewards_missing_confirmations_is_unknown(monkeypatch):
 
     _install_single_block_mock(monkeypatch, block, tip_height=5)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
     assert only_block["confirmations"] is None
@@ -422,8 +448,6 @@ def test_az_blocks_rewards_missing_confirmations_is_unknown(monkeypatch):
     assert only_block["is_mature"] is False
     assert only_block["blocks_until_mature"] is None
     assert only_block["mediantime"] is None
-    # Missing confirmations is indeterminate state; we fail closed and report
-    # the block as not on the active chain so callers never assume ledger truth.
     assert only_block["is_on_main_chain"] is False
     assert only_block["coinbase_total_sats"] == 100_000_000
 
@@ -443,14 +467,89 @@ def test_az_blocks_rewards_orphan_confirmations_is_not_on_main_chain(monkeypatch
 
     _install_single_block_mock(monkeypatch, block, tip_height=99)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
     assert only_block["confirmations"] == -1
     assert only_block["is_on_main_chain"] is False
-    # confirmations < 0 is also not "mature" and has no countdown to maturity.
     assert only_block["is_mature"] is False
     assert only_block["blocks_until_mature"] is None
+
+
+@pytest.mark.parametrize(
+    ("height", "confirmations", "expected_maturity_height"),
+    [
+        # Spec example: height=1000, maturity_confirmations=100 -> 1099.
+        (1000, 1, 1099),
+        # Block already mature (confirmations >> 100) still reports the same
+        # `maturity_height` because it's derived from height alone, not from
+        # confirmations.
+        (5000, 500, 5099),
+        # Low-height edge: maturity_height can be lower than tip; the field is
+        # purely arithmetic and must still be returned regardless of whether
+        # the block is currently mature/immature.
+        (50, 10, 149),
+        # Genesis edge.
+        (0, 1, 99),
+    ],
+)
+def test_az_blocks_rewards_includes_maturity_height(
+    monkeypatch, height, confirmations, expected_maturity_height
+):
+    """
+    `maturity_height = height + maturity_confirmations - 1` must always be
+    populated, independently of confirmations / is_mature, so the ledger can
+    schedule deferred reward ingestion without re-deriving it.
+    """
+    client = _make_client(monkeypatch)
+
+    block = _make_block(
+        height=height,
+        confirmations=confirmations,
+        vout=[
+            {"n": 0, "value": 50.0, "scriptPubKey": {"type": "pubkeyhash", "address": "X"}}
+        ],
+    )
+
+    _install_single_block_mock(monkeypatch, block, tip_height=height)
+
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    body = r.json()
+
+    only_block = body["blocks"][0]
+    assert only_block["height"] == height
+    assert only_block["maturity_height"] == expected_maturity_height
+    # The relationship to maturity_confirmations must be self-consistent.
+    assert (
+        only_block["maturity_height"]
+        == only_block["height"] + body["maturity_confirmations"] - 1
+    )
+
+
+def test_az_blocks_rewards_maturity_height_present_when_confirmations_unknown(monkeypatch):
+    """
+    `maturity_height` is derived from `height` and the protocol constant; it
+    must remain present even when confirmations is missing/null and
+    `blocks_until_mature` collapses to None.
+    """
+    client = _make_client(monkeypatch)
+
+    block = {
+        "hash": "f" * 64,
+        "time": 1_700_000_999,
+        "tx": [{"txid": "cb", "vout": [{"n": 0, "value": 1.0}]}],
+    }
+
+    _install_single_block_mock(monkeypatch, block, tip_height=750)
+
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    only_block = r.json()["blocks"][0]
+    assert only_block["confirmations"] is None
+    assert only_block["blocks_until_mature"] is None
+    assert only_block["is_mature"] is False
+    assert only_block["maturity_height"] == 849
 
 
 @pytest.mark.parametrize("confirmations", [0, 1, 99, 100, 12_345])
@@ -469,7 +568,7 @@ def test_az_blocks_rewards_active_chain_confirmations_is_on_main_chain(monkeypat
 
     _install_single_block_mock(monkeypatch, block, tip_height=10)
 
-    r = client.get("/v1/az/blocks/rewards?limit=1", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     only_block = r.json()["blocks"][0]
     assert only_block["confirmations"] == confirmations
@@ -507,7 +606,7 @@ def test_az_blocks_rewards_limit_is_capped_by_tip(monkeypatch):
 
     monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
 
-    r = client.get("/v1/az/blocks/rewards?limit=50", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?limit=50&owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 200
     body = r.json()
     # tip=1 means heights [1, 0]; limit cannot synthesize extra blocks.
@@ -540,7 +639,7 @@ def test_az_blocks_rewards_returns_502_on_rpc_unavailable(monkeypatch):
 
     monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", boom, raising=True)
 
-    r = client.get("/v1/az/blocks/rewards", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 502
     assert r.json()["detail"]["code"] == "AZ_RPC_UNAVAILABLE"
 
@@ -560,7 +659,7 @@ def test_az_blocks_rewards_returns_503_on_wrong_chain(monkeypatch):
 
     monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "_call_raw", fake_raw, raising=True)
 
-    r = client.get("/v1/az/blocks/rewards", headers=AUTH_HEADER)
+    r = client.get("/v1/az/blocks/rewards?owned_only=false", headers=AUTH_HEADER)
     assert r.status_code == 503
     assert r.json() == {
         "detail": {
@@ -569,3 +668,934 @@ def test_az_blocks_rewards_returns_503_on_wrong_chain(monkeypatch):
         }
     }
     assert calls == ["getblockchaininfo"]
+
+
+# ----------------------------------------------------------------------------
+# Ownership classification tests
+# ----------------------------------------------------------------------------
+
+
+def test_az_blocks_rewards_owned_only_without_config_returns_503(monkeypatch):
+    """
+    owned_only=true with neither AZ_REWARD_OWNERSHIP_ADDRESSES nor
+    AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS set must fail closed and not call RPC.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC should not be called when ownership unconfigured: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get("/v1/az/blocks/rewards?owned_only=true", headers=AUTH_HEADER)
+    assert r.status_code == 503
+    assert r.json() == {
+        "detail": {
+            "code": "AZ_REWARD_OWNERSHIP_NOT_CONFIGURED",
+            "message": "Reward ownership matching is not configured.",
+        }
+    }
+
+
+def test_az_blocks_rewards_owned_only_default_is_true(monkeypatch):
+    """
+    Sanity check that owned_only defaults to true: hitting /rewards with no
+    query string and no ownership configured produces the same 503 as an
+    explicit owned_only=true.
+    """
+    client = _make_client(monkeypatch)
+
+    r = client.get("/v1/az/blocks/rewards", headers=AUTH_HEADER)
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "AZ_REWARD_OWNERSHIP_NOT_CONFIGURED"
+
+
+def test_az_blocks_rewards_owned_only_filters_by_address(monkeypatch):
+    """
+    With only an ownership address configured, owned_only=true must drop blocks
+    whose coinbase doesn't pay that address and label the surviving block as
+    matched by coinbase_output_address.
+    """
+    client = _make_client(
+        monkeypatch,
+        AZ_REWARD_OWNERSHIP_ADDRESSES="  AZmine_us  ,  ,  AZmine_other  ",
+    )
+
+    tip_height = 5
+    blocks_by_height = {
+        5: _make_block(
+            height=5,
+            confirmations=10,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {
+                        "type": "pubkeyhash",
+                        "address": "AZmine_us",
+                        "hex": "76a91400112233445566778899aabbccddeeff0011223388ac",
+                    },
+                }
+            ],
+        ),
+        4: _make_block(
+            height=4,
+            confirmations=11,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {
+                        "type": "pubkeyhash",
+                        "address": "AZmine_them",
+                        "hex": "76a914aabbccddeeff00112233445566778899aabbccdd88ac",
+                    },
+                }
+            ],
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get("/v1/az/blocks/rewards?limit=2&owned_only=true", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["owned_only"] is True
+    assert body["ownership_configured"] is True
+    assert [b["height"] for b in body["blocks"]] == [5]
+
+    only_block = body["blocks"][0]
+    assert only_block["is_owned_reward"] is True
+    assert only_block["matched_output_indexes"] == [0]
+    assert only_block["ownership_match"] == "coinbase_output_address"
+
+
+def test_az_blocks_rewards_owned_only_filters_by_script_pubkey_case_insensitive(monkeypatch):
+    """
+    Configured scriptPubKey hex matches case-insensitively against the actual
+    coinbase output's hex. Demonstrates matching when configured value is
+    upper-case and the on-chain hex is lower-case.
+    """
+    on_chain_hex = "76a914aabbccddeeff00112233445566778899aabbccdd88ac"
+    client = _make_client(
+        monkeypatch,
+        AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS=on_chain_hex.upper(),
+    )
+
+    tip_height = 9
+    blocks_by_height = {
+        9: _make_block(
+            height=9,
+            confirmations=2,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {
+                        "type": "pubkeyhash",
+                        "hex": on_chain_hex,
+                        # No address; only the hex should drive the match.
+                    },
+                }
+            ],
+        ),
+        8: _make_block(
+            height=8,
+            confirmations=3,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {
+                        "type": "pubkeyhash",
+                        "address": "someone_else",
+                        "hex": "76a914000000000000000000000000000000000000000088ac",
+                    },
+                }
+            ],
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get("/v1/az/blocks/rewards?limit=2&owned_only=true", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [9]
+    only_block = body["blocks"][0]
+    assert only_block["is_owned_reward"] is True
+    assert only_block["matched_output_indexes"] == [0]
+    assert only_block["ownership_match"] == "coinbase_script_pub_key"
+
+
+def test_az_blocks_rewards_owned_only_false_returns_all_with_classification(monkeypatch):
+    """
+    With owned_only=false, every walked block is returned, but each carries
+    the classification fields so callers can audit ownership without losing
+    the chain context.
+    """
+    client = _make_client(
+        monkeypatch,
+        AZ_REWARD_OWNERSHIP_ADDRESSES="AZmine_us",
+    )
+
+    tip_height = 21
+    blocks_by_height = {
+        21: _make_block(
+            height=21,
+            confirmations=1,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {"type": "pubkeyhash", "address": "AZmine_us"},
+                }
+            ],
+        ),
+        20: _make_block(
+            height=20,
+            confirmations=2,
+            vout=[
+                {
+                    "n": 0,
+                    "value": 50.0,
+                    "scriptPubKey": {"type": "pubkeyhash", "address": "someone_else"},
+                }
+            ],
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get("/v1/az/blocks/rewards?limit=2&owned_only=false", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["owned_only"] is False
+    assert body["ownership_configured"] is True
+    assert [b["height"] for b in body["blocks"]] == [21, 20]
+
+    owned, unowned = body["blocks"]
+    assert owned["is_owned_reward"] is True
+    assert owned["matched_output_indexes"] == [0]
+    assert owned["ownership_match"] == "coinbase_output_address"
+
+    assert unowned["is_owned_reward"] is False
+    assert unowned["matched_output_indexes"] == []
+    assert unowned["ownership_match"] is None
+
+
+def test_az_blocks_rewards_multiple_matching_outputs_returns_all_indexes(monkeypatch):
+    """
+    matched_output_indexes lists every coinbase output that matched, in the
+    order they appear in the coinbase. Output index 1 (a non-matching
+    address) is correctly excluded.
+    """
+    client = _make_client(
+        monkeypatch,
+        AZ_REWARD_OWNERSHIP_ADDRESSES="AZmine_us",
+    )
+
+    block = _make_block(
+        height=77,
+        confirmations=5,
+        vout=[
+            {
+                "n": 0,
+                "value": 25.0,
+                "scriptPubKey": {"type": "pubkeyhash", "address": "AZmine_us"},
+            },
+            {
+                "n": 1,
+                "value": 5.0,
+                "scriptPubKey": {"type": "pubkeyhash", "address": "AZsomeone"},
+            },
+            {
+                "n": 2,
+                "value": 20.0,
+                "scriptPubKey": {"type": "pubkeyhash", "address": "AZmine_us"},
+            },
+        ],
+    )
+
+    _install_single_block_mock(monkeypatch, block, tip_height=77)
+
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=true", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    only_block = r.json()["blocks"][0]
+    assert only_block["is_owned_reward"] is True
+    assert only_block["matched_output_indexes"] == [0, 2]
+    assert only_block["ownership_match"] == "coinbase_output_address"
+
+
+def test_az_blocks_rewards_address_and_script_match_combines_label(monkeypatch):
+    """
+    When at least one output matches by address AND at least one (possibly
+    different) output matches by scriptPubKey, ownership_match must collapse
+    to the combined label and matched_output_indexes must include both.
+    """
+    other_script_hex = "0014cafef00d0000000000000000000000000000beef"
+    client = _make_client(
+        monkeypatch,
+        AZ_REWARD_OWNERSHIP_ADDRESSES="AZmine_us",
+        AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS=other_script_hex,
+    )
+
+    block = _make_block(
+        height=88,
+        confirmations=5,
+        vout=[
+            {
+                "n": 0,
+                "value": 30.0,
+                "scriptPubKey": {"type": "pubkeyhash", "address": "AZmine_us"},
+            },
+            {
+                "n": 1,
+                "value": 20.0,
+                "scriptPubKey": {
+                    "type": "witness_v0_keyhash",
+                    "hex": other_script_hex,
+                },
+            },
+        ],
+    )
+
+    _install_single_block_mock(monkeypatch, block, tip_height=88)
+
+    r = client.get("/v1/az/blocks/rewards?limit=1&owned_only=true", headers=AUTH_HEADER)
+    assert r.status_code == 200
+    only_block = r.json()["blocks"][0]
+    assert only_block["is_owned_reward"] is True
+    assert only_block["matched_output_indexes"] == [0, 1]
+    assert only_block["ownership_match"] == "coinbase_output_address_and_script_pub_key"
+
+
+# ----------------------------------------------------------------------------
+# Time-window filtering tests
+# ----------------------------------------------------------------------------
+#
+# The following tests exercise the start_time / end_time / time_field params
+# and the AZ_REWARD_TIME_RANGE_* error envelopes. They are deliberately built
+# from small mocked chains (typically tip <= ~20) so each test is fully
+# deterministic and the half-open interval and early-termination semantics
+# can be asserted exactly.
+
+
+def _coinbase_vout(address: str = "AZanyone") -> list[dict[str, Any]]:
+    """One-output coinbase used as a default when a test doesn't care about value."""
+    return [
+        {"n": 0, "value": 50.0, "scriptPubKey": {"type": "pubkeyhash", "address": address}}
+    ]
+
+
+def test_az_blocks_rewards_time_window_filters_by_block_time(monkeypatch):
+    """
+    Only blocks whose block.time falls inside [start_time, end_time) are
+    returned. Blocks before start_time and at-or-after end_time are dropped.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 4
+    blocks_by_height = {
+        4: _make_block(height=4, confirmations=1, time=210, vout=_coinbase_vout()),
+        3: _make_block(height=3, confirmations=2, time=170, vout=_coinbase_vout()),
+        2: _make_block(height=2, confirmations=3, time=150, vout=_coinbase_vout()),
+        1: _make_block(height=1, confirmations=4, time=100, vout=_coinbase_vout()),
+        0: _make_block(height=0, confirmations=5, time=50, vout=_coinbase_vout()),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    # Window [150, 200): height 4 (time=210) excluded above, height 3 (time=170)
+    # in, height 2 (time=150) in (boundary include), heights 1 and 0 below.
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=150&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [3, 2]
+    assert body["time_filter"] == {
+        "start_time": 150,
+        "end_time": 200,
+        "time_field": "time",
+        "interval_rule": "start_time <= selected_time < end_time",
+    }
+
+
+def test_az_blocks_rewards_time_window_includes_block_at_start_time(monkeypatch):
+    """
+    A block whose selected time equals start_time is INCLUDED in the result
+    (the half-open interval is closed on the lower bound).
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 2
+    blocks_by_height = {
+        2: _make_block(height=2, confirmations=1, time=180, vout=_coinbase_vout()),
+        1: _make_block(height=1, confirmations=2, time=140, vout=_coinbase_vout()),
+        0: _make_block(height=0, confirmations=3, time=100, vout=_coinbase_vout()),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=140&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # Heights 2 (time=180) and 1 (time=140 == start_time) are in window.
+    assert [b["height"] for b in body["blocks"]] == [2, 1]
+    boundary_block = next(b for b in body["blocks"] if b["height"] == 1)
+    assert boundary_block["time"] == 140
+
+
+def test_az_blocks_rewards_time_window_excludes_block_at_end_time(monkeypatch):
+    """
+    A block whose selected time equals end_time is EXCLUDED (the half-open
+    interval is open on the upper bound). This is what avoids double-counting
+    the boundary block when two payout intervals abut.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 2
+    blocks_by_height = {
+        2: _make_block(height=2, confirmations=1, time=200, vout=_coinbase_vout()),
+        1: _make_block(height=1, confirmations=2, time=170, vout=_coinbase_vout()),
+        0: _make_block(height=0, confirmations=3, time=150, vout=_coinbase_vout()),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=150&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # Height 2 (time=200 == end_time) is excluded; heights 1 and 0 are inside.
+    assert [b["height"] for b in body["blocks"]] == [1, 0]
+
+
+def test_az_blocks_rewards_time_window_with_owned_only_true_returns_only_owned_in_window(
+    monkeypatch,
+):
+    """
+    Both filters must apply: blocks must be inside the time window AND owned.
+    A block that is owned but outside the window is excluded; a block that is
+    inside the window but unowned is also excluded.
+    """
+    client = _make_client(monkeypatch, AZ_REWARD_OWNERSHIP_ADDRESSES="AZmine_us")
+
+    tip_height = 4
+    blocks_by_height = {
+        # Owned but ABOVE the window -> excluded by time filter.
+        4: _make_block(
+            height=4, confirmations=1, time=300, vout=_coinbase_vout("AZmine_us")
+        ),
+        # Owned and INSIDE the window -> included.
+        3: _make_block(
+            height=3, confirmations=2, time=180, vout=_coinbase_vout("AZmine_us")
+        ),
+        # Inside the window but UNOWNED -> excluded by ownership filter.
+        2: _make_block(
+            height=2, confirmations=3, time=160, vout=_coinbase_vout("someone_else")
+        ),
+        # Owned and INSIDE the window (boundary include at start_time=150).
+        1: _make_block(
+            height=1, confirmations=4, time=150, vout=_coinbase_vout("AZmine_us")
+        ),
+        # Below window.
+        0: _make_block(
+            height=0, confirmations=5, time=50, vout=_coinbase_vout("AZmine_us")
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=true&start_time=150&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [3, 1]
+    for block in body["blocks"]:
+        assert block["is_owned_reward"] is True
+        assert 150 <= block["time"] < 200
+
+
+def test_az_blocks_rewards_time_window_with_owned_only_false_returns_owned_and_unowned(
+    monkeypatch,
+):
+    """
+    With owned_only=false, all blocks inside the time window are returned --
+    owned and unowned alike -- but each carries the full ownership
+    classification fields so callers can audit separately.
+    """
+    client = _make_client(monkeypatch, AZ_REWARD_OWNERSHIP_ADDRESSES="AZmine_us")
+
+    tip_height = 3
+    blocks_by_height = {
+        3: _make_block(
+            height=3, confirmations=1, time=180, vout=_coinbase_vout("AZmine_us")
+        ),
+        2: _make_block(
+            height=2, confirmations=2, time=160, vout=_coinbase_vout("someone_else")
+        ),
+        1: _make_block(
+            height=1, confirmations=3, time=140, vout=_coinbase_vout()
+        ),  # below window
+        0: _make_block(
+            height=0, confirmations=4, time=100, vout=_coinbase_vout()
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=150&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [3, 2]
+    owned, unowned = body["blocks"]
+    assert owned["is_owned_reward"] is True
+    assert owned["ownership_match"] == "coinbase_output_address"
+    assert unowned["is_owned_reward"] is False
+    assert unowned["ownership_match"] is None
+
+
+def test_az_blocks_rewards_time_window_filters_by_mediantime(monkeypatch):
+    """
+    time_field=mediantime drives the filter from block.mediantime, not
+    block.time. The two timestamps can disagree (each block here has a
+    deliberately different mediantime), and only mediantime should matter.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 3
+    blocks_by_height = {
+        3: _make_block(
+            height=3, confirmations=1, time=999, mediantime=210, vout=_coinbase_vout()
+        ),
+        2: _make_block(
+            height=2, confirmations=2, time=1, mediantime=170, vout=_coinbase_vout()
+        ),
+        1: _make_block(
+            height=1, confirmations=3, time=999, mediantime=150, vout=_coinbase_vout()
+        ),
+        0: _make_block(
+            height=0, confirmations=4, time=1, mediantime=80, vout=_coinbase_vout()
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false"
+        "&start_time=150&end_time=200&time_field=mediantime",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # mediantimes: 210 (above), 170 (in), 150 (in, boundary), 80 (below).
+    assert [b["height"] for b in body["blocks"]] == [2, 1]
+    assert body["time_filter"]["time_field"] == "mediantime"
+
+
+def test_az_blocks_rewards_time_window_mediantime_early_terminates_below_start(monkeypatch):
+    """
+    For time_field=mediantime, the scan must early-terminate as soon as it
+    sees a block whose mediantime is below start_time. Heights deeper than
+    that block must NEVER be requested (no extra getblockhash/getblock calls).
+    BIP113 mediantime is non-decreasing on the active chain so this is safe.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 100
+
+    blocks_by_height = {
+        100: _make_block(
+            height=100, confirmations=1, time=1, mediantime=300, vout=_coinbase_vout()
+        ),
+        99: _make_block(
+            height=99, confirmations=2, time=1, mediantime=220, vout=_coinbase_vout()
+        ),
+        # First block strictly below start_time=200 -- triggers early termination.
+        98: _make_block(
+            height=98, confirmations=3, time=1, mediantime=180, vout=_coinbase_vout()
+        ),
+    }
+    # Heights 97..0 are intentionally NOT in blocks_by_height so any attempt
+    # to fetch them blows up the test (KeyError) -- a stronger guarantee than
+    # an inequality assertion on a fetched-heights list.
+
+    fetched_heights: list[int] = []
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        if method == "getblockchaininfo":
+            return {
+                "chain": "main",
+                "blocks": tip_height,
+                "bestblockhash": blocks_by_height[100]["hash"],
+            }
+        if method == "getblockhash":
+            height = params[0]
+            fetched_heights.append(height)
+            return blocks_by_height[height]["hash"]
+        if method == "getblock":
+            blockhash, verbosity = params
+            assert verbosity == 2
+            for block in blocks_by_height.values():
+                if block["hash"] == blockhash:
+                    return block
+            raise AssertionError(f"unknown blockhash {blockhash}")
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false"
+        "&start_time=200&end_time=400&time_field=mediantime",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # Heights 100 and 99 inside [200, 400). Height 98 fetched (its mediantime
+    # is what tells us to stop), excluded from result, then loop breaks.
+    assert [b["height"] for b in body["blocks"]] == [100, 99]
+    assert fetched_heights == [100, 99, 98]
+
+
+@pytest.mark.parametrize("time_field", ["time", "mediantime"])
+def test_az_blocks_rewards_time_window_excludes_block_with_missing_selected_time(
+    monkeypatch, time_field
+):
+    """
+    A block whose selected time field is missing or non-int is silently
+    excluded from time-window results. The endpoint must NOT crash and must
+    NOT short-circuit (other blocks past the gap can still be in window).
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 3
+
+    if time_field == "time":
+        # Use a block dict that simply omits the `time` field at the source.
+        broken_block: dict[str, Any] = {
+            "hash": f"{2:064x}",
+            "confirmations": 2,
+            "tx": [{"txid": f"cb{2:062x}", "vout": _coinbase_vout()}],
+        }
+    else:
+        # `mediantime` is omitted by default in _make_block when not passed.
+        broken_block = _make_block(
+            height=2, confirmations=2, time=170, vout=_coinbase_vout()
+        )
+
+    blocks_by_height = {
+        3: _make_block(
+            height=3, confirmations=1, time=180, mediantime=180, vout=_coinbase_vout()
+        ),
+        2: broken_block,
+        1: _make_block(
+            height=1, confirmations=3, time=160, mediantime=160, vout=_coinbase_vout()
+        ),
+        0: _make_block(
+            height=0, confirmations=4, time=10, mediantime=10, vout=_coinbase_vout()
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?owned_only=false"
+        f"&start_time=150&end_time=200&time_field={time_field}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    # Height 2 (selected time missing/None) is excluded; heights 3 and 1 in.
+    assert [b["height"] for b in body["blocks"]] == [3, 1]
+    assert all(b["height"] != 2 for b in body["blocks"])
+
+
+def test_az_blocks_rewards_time_window_only_start_time_returns_422(monkeypatch):
+    """
+    Only one of start_time/end_time provided -> 422 AZ_REWARD_TIME_RANGE_INCOMPLETE.
+    RPC must NOT be called.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=100",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_TIME_RANGE_INCOMPLETE"
+
+
+def test_az_blocks_rewards_time_window_only_end_time_returns_422(monkeypatch):
+    """Symmetric to the previous test: only end_time provided -> 422."""
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_TIME_RANGE_INCOMPLETE"
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        (200, 200),  # equal -> rejected (open upper bound, equal would be empty)
+        (300, 200),  # end < start
+        (1, 0),
+    ],
+)
+def test_az_blocks_rewards_time_window_end_le_start_returns_422(monkeypatch, start, end):
+    """end_time must be strictly greater than start_time."""
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?owned_only=false&start_time={start}&end_time={end}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_TIME_RANGE_INVALID"
+
+
+def test_az_blocks_rewards_time_window_invalid_time_field_returns_422(monkeypatch):
+    """
+    Anything other than `time` / `mediantime` is rejected by FastAPI's Literal
+    validator before the route runs -> native FastAPI 422 envelope.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false"
+        "&start_time=100&end_time=200&time_field=blocktime",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+
+
+def test_az_blocks_rewards_time_window_negative_start_time_returns_422(monkeypatch):
+    """`Query(ge=0)` rejects negative start_time before the route runs."""
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=-1&end_time=10",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+
+
+def test_az_blocks_rewards_no_time_params_preserves_limit_based_behavior(monkeypatch):
+    """
+    No time params -> legacy `limit`-bounded scan returns exactly `limit`
+    blocks (or fewer if capped by tip), and the time_filter top-level field
+    reports start_time=null/end_time=null/time_field='time'.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 9
+    blocks_by_height = {
+        h: _make_block(
+            height=h, confirmations=tip_height - h + 1, time=h * 10, vout=_coinbase_vout()
+        )
+        for h in range(0, tip_height + 1)
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?limit=3&owned_only=false",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [9, 8, 7]
+    assert body["time_filter"] == {
+        "start_time": None,
+        "end_time": None,
+        "time_field": "time",
+        "interval_rule": "start_time <= selected_time < end_time",
+    }
+
+
+def test_az_blocks_rewards_time_window_max_scan_guard_returns_too_large(monkeypatch):
+    """
+    A time window that would force more than _MAX_TIME_RANGE_SCAN_BLOCKS
+    block fetches must fail closed with 422 AZ_REWARD_TIME_RANGE_TOO_LARGE
+    rather than performing an unbounded chain scan.
+
+    We patch the constant to a small value (2) so the guard fires after two
+    blocks have been processed -- equivalent in behavior to the production
+    5000-block guard but cheap to exercise from a unit test.
+    """
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    monkeypatch.setattr(az_blocks_module, "_MAX_TIME_RANGE_SCAN_BLOCKS", 2)
+
+    client = _make_client(monkeypatch)
+
+    tip_height = 10
+    # All blocks have time far above the window so none match. With time_field
+    # =time the scan does NOT early-terminate, so the guard is the only thing
+    # that can stop the walk.
+    blocks_by_height = {
+        h: _make_block(
+            height=h,
+            confirmations=tip_height - h + 1,
+            time=999_999_999,
+            vout=_coinbase_vout(),
+        )
+        for h in (10, 9)
+    }
+    # Heights 8..0 deliberately absent: if the route ever tries to fetch them,
+    # the mock will KeyError and the test will fail loudly.
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false&start_time=0&end_time=1000",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["code"] == "AZ_REWARD_TIME_RANGE_TOO_LARGE"
+    # The error message should reference the (patched) limit so operators see
+    # exactly which guard fired.
+    assert "2 blocks" in detail["message"]
+
+
+def test_az_blocks_rewards_time_window_results_include_maturity_height(monkeypatch):
+    """
+    maturity_height must be populated on every per-block entry returned by
+    the time-window path, identically to limit-based mode. We use mediantime
+    here so the scan can early-terminate after observing the below-window
+    block at height 999, keeping the test mock small while still exercising
+    the spec example (height=1000 -> maturity_height=1099).
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 1000
+    blocks_by_height = {
+        1000: _make_block(
+            height=1000,
+            confirmations=1,
+            time=180,
+            mediantime=180,
+            vout=_coinbase_vout(),
+        ),
+        # mediantime=140 < start_time=150 -> triggers early termination after
+        # this block is fetched. Heights below 999 are intentionally absent so
+        # any over-scan would KeyError.
+        999: _make_block(
+            height=999,
+            confirmations=2,
+            time=140,
+            mediantime=140,
+            vout=_coinbase_vout(),
+        ),
+    }
+
+    _install_multi_block_mock(monkeypatch, blocks_by_height, tip_height=tip_height)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?owned_only=false"
+        "&start_time=150&end_time=200&time_field=mediantime",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [1000]
+    only_block = body["blocks"][0]
+    # maturity_height = 1000 + 100 - 1 = 1099 (matches the spec example).
+    assert only_block["maturity_height"] == 1099
+    assert (
+        only_block["maturity_height"]
+        == only_block["height"] + body["maturity_confirmations"] - 1
+    )
+
+
+def test_az_blocks_rewards_time_window_owned_only_default_true_without_config_returns_503(
+    monkeypatch,
+):
+    """
+    Time-window queries do not bypass the ownership precheck: with
+    owned_only=true (default) and ownership unconfigured, the endpoint still
+    returns 503 AZ_REWARD_OWNERSHIP_NOT_CONFIGURED *before* any RPC call.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?start_time=100&end_time=200",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "AZ_REWARD_OWNERSHIP_NOT_CONFIGURED"

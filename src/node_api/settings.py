@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     az_rpc_timeout_seconds: float = Field(default=5.0, validation_alias="AZ_RPC_TIMEOUT_SECONDS")
     az_expected_chain: str = Field(default="main", validation_alias="AZ_EXPECTED_CHAIN")
 
+    # Reward ownership matching for `/v1/az/blocks/rewards`. Comma-separated;
+    # whitespace is trimmed and empty entries are dropped at the route layer.
+    # Addresses match exactly; scriptPubKey hex matches case-insensitively.
+    az_reward_ownership_addresses: str | None = Field(
+        default=None, validation_alias="AZ_REWARD_OWNERSHIP_ADDRESSES"
+    )
+    az_reward_ownership_script_pubkeys: str | None = Field(
+        default=None, validation_alias="AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS"
+    )
+
     # Bitcoin RPC (used by `/v1/btc/*`)
     btc_rpc_url: str | None = Field(default=None, validation_alias="BTC_RPC_URL")
     btc_rpc_cookie_file: str | None = Field(
