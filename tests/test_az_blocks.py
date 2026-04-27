@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from node_api.services.azcoin_rpc import AzcoinRpcTransportError
+from node_api.services.azcoin_rpc import AzcoinRpcResponseError, AzcoinRpcTransportError
 from node_api.settings import get_settings
 
 AUTH_HEADER = {"Authorization": "Bearer testtoken"}
@@ -43,8 +43,13 @@ def _make_block(
     time: int = 1_700_000_000,
     mediantime: int | None = None,
 ) -> dict[str, Any]:
+    # Real getblock(verbosity=2) responses always include `height`; we mirror
+    # that here so blockhash-lookup tests (which read block["height"] directly)
+    # can reuse this fixture. Scan-mode tests pass height through the loop and
+    # ignore the dict field, so this is harmless to existing tests.
     block: dict[str, Any] = {
         "hash": f"{height:064x}",
+        "height": height,
         "confirmations": confirmations,
         "time": time,
         "tx": [
@@ -1599,3 +1604,593 @@ def test_az_blocks_rewards_time_window_owned_only_default_true_without_config_re
     )
     assert r.status_code == 503
     assert r.json()["detail"]["code"] == "AZ_REWARD_OWNERSHIP_NOT_CONFIGURED"
+
+
+# ----------------------------------------------------------------------------
+# Scan mode now emits lookup-mode metadata fields on every response.
+# ----------------------------------------------------------------------------
+
+
+def test_az_blocks_rewards_scan_mode_emits_lookup_metadata(monkeypatch):
+    """
+    Even in pure scan mode (no blockhashes), the response must carry the new
+    top-level lookup metadata so ledger code can branch on `lookup_mode`
+    without reading the request URL back.
+    """
+    client = _make_client(monkeypatch)
+
+    block = _make_block(
+        height=200,
+        confirmations=10,
+        vout=[
+            {
+                "n": 0,
+                "value": 1.0,
+                "scriptPubKey": {
+                    "type": "pubkeyhash",
+                    "address": "AZaddrZ",
+                    "hex": "76a91400000000000000000000000000000000000000ee88ac",
+                },
+            }
+        ],
+    )
+    _install_single_block_mock(monkeypatch, block, tip_height=200)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?limit=1&owned_only=false",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["lookup_mode"] == "scan"
+    assert body["requested_blockhash_count"] == 0
+    assert body["resolved_blockhash_count"] == 1
+    assert body["unresolved_blockhashes"] == []
+    assert body["filtered_out_blockhashes"] == []
+
+
+# ----------------------------------------------------------------------------
+# Blockhash lookup mode tests
+# ----------------------------------------------------------------------------
+
+
+def _install_lookup_blockhash_mock(
+    monkeypatch,
+    blocks_by_hash: dict[str, dict[str, Any] | None],
+    tip_height: int,
+    tip_hash: str,
+) -> list[tuple[str, Any]]:
+    """
+    Install an RPC mock for blockhash-lookup tests.
+
+    `blocks_by_hash` keys are lowercase-canonical hex hashes; values are:
+      * a block dict to return from getblock(hash, 2), or
+      * None to simulate an RPC application error (treated as "not found"
+        / "unresolved" in lookup mode).
+
+    Returns a list of (method, params) tuples capturing every RPC call so
+    individual tests can assert that `getblockhash` is never invoked in
+    lookup mode.
+    """
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    calls: list[tuple[str, Any]] = []
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        calls.append((method, params))
+        if method == "getblockchaininfo":
+            return {
+                "chain": "main",
+                "blocks": tip_height,
+                "bestblockhash": tip_hash,
+            }
+        if method == "getblockhash":
+            raise AssertionError(
+                "lookup mode must not call getblockhash; "
+                f"unexpected params={params}"
+            )
+        if method == "getblock":
+            assert isinstance(params, list) and len(params) == 2
+            requested_hash, verbosity = params
+            assert verbosity == 2
+            key = requested_hash.lower() if isinstance(requested_hash, str) else None
+            if key is None or key not in blocks_by_hash:
+                raise AzcoinRpcResponseError(code=-5, message="Block not found")
+            block = blocks_by_hash[key]
+            if block is None:
+                raise AzcoinRpcResponseError(code=-5, message="Block not found")
+            return block
+        raise AssertionError(f"unexpected method: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+    return calls
+
+
+def _lookup_block(
+    height: int,
+    confirmations: int = 1,
+    *,
+    time: int = 1_700_000_000,
+    mediantime: int | None = None,
+    address: str = "AZaddrL",
+    value: float = 50.0,
+) -> dict[str, Any]:
+    """Build a single getblock-verbosity-2 payload for blockhash-lookup tests."""
+    return _make_block(
+        height=height,
+        confirmations=confirmations,
+        time=time,
+        mediantime=mediantime,
+        vout=[
+            {
+                "n": 0,
+                "value": value,
+                "scriptPubKey": {
+                    "type": "pubkeyhash",
+                    "address": address,
+                    "hex": "76a91400000000000000000000000000000000000000aa88ac",
+                },
+            }
+        ],
+    )
+
+
+def test_az_blocks_rewards_lookup_mode_does_not_call_getblockhash(monkeypatch):
+    """
+    Repeated `?blockhash=` activates direct lookup: no height-based scan
+    is performed and `getblockhash` must never be invoked.
+    """
+    client = _make_client(monkeypatch)
+
+    block_a = _lookup_block(height=10, confirmations=200)
+    block_b = _lookup_block(height=11, confirmations=199, address="AZaddrL2")
+    hash_a = block_a["hash"]
+    hash_b = block_b["hash"]
+
+    calls = _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_a: block_a, hash_b: block_b},
+        tip_height=500,
+        tip_hash="f" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_a}&blockhash={hash_b}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["lookup_mode"] == "blockhashes"
+    assert body["requested_blockhash_count"] == 2
+    assert body["resolved_blockhash_count"] == 2
+    assert body["unresolved_blockhashes"] == []
+    assert body["filtered_out_blockhashes"] == []
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b]
+
+    methods = [c[0] for c in calls]
+    assert "getblockhash" not in methods
+    assert methods.count("getblock") == 2
+
+
+def test_az_blocks_rewards_lookup_mode_csv_blockhashes_param(monkeypatch):
+    """
+    The CSV `?blockhashes=h1,h2` form is equivalent to two repeated
+    `?blockhash=` parameters and produces the same lookup results.
+    """
+    client = _make_client(monkeypatch)
+
+    block_a = _lookup_block(height=20)
+    block_b = _lookup_block(height=21, address="AZaddrM")
+    hash_a = block_a["hash"]
+    hash_b = block_b["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_a: block_a, hash_b: block_b},
+        tip_height=500,
+        tip_hash="e" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhashes={hash_a},{hash_b}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["lookup_mode"] == "blockhashes"
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b]
+
+
+def test_az_blocks_rewards_lookup_mode_dedupe_preserves_request_order(monkeypatch):
+    """
+    Duplicate hashes are dropped (first occurrence wins) while the
+    request-order of *unique* hashes is preserved across the joined input
+    of repeated `blockhash` and CSV `blockhashes`.
+    """
+    client = _make_client(monkeypatch)
+
+    block_a = _lookup_block(height=30)
+    block_b = _lookup_block(height=31, address="AZB")
+    block_c = _lookup_block(height=32, address="AZC")
+    hash_a = block_a["hash"]
+    hash_b = block_b["hash"]
+    hash_c = block_c["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_a: block_a, hash_b: block_b, hash_c: block_c},
+        tip_height=500,
+        tip_hash="d" * 64,
+    )
+
+    r = client.get(
+        # Order: a, b, a (dup), c, b (dup) -> unique a, b, c.
+        f"/v1/az/blocks/rewards"
+        f"?blockhash={hash_a}&blockhash={hash_b}&blockhash={hash_a}"
+        f"&blockhashes={hash_c},{hash_b}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["requested_blockhash_count"] == 3
+    assert body["resolved_blockhash_count"] == 3
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b, hash_c]
+
+
+def test_az_blocks_rewards_lookup_mode_normalizes_case(monkeypatch):
+    """
+    Mixed-case hex hashes are accepted and normalized to lowercase before
+    deduplication and RPC dispatch.
+    """
+    client = _make_client(monkeypatch)
+
+    block_a = _lookup_block(height=40)
+    hash_a = block_a["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_a: block_a},
+        tip_height=500,
+        tip_hash="c" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_a.upper()}&blockhash={hash_a.lower()}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["requested_blockhash_count"] == 1
+    assert body["resolved_blockhash_count"] == 1
+    assert body["blocks"][0]["blockhash"] == hash_a
+
+
+def test_az_blocks_rewards_lookup_mode_invalid_blockhash_returns_422(monkeypatch):
+    """
+    A malformed hash (wrong length, non-hex chars) returns 422 with the
+    AZ_REWARD_BLOCKHASH_INVALID code; no RPC call is made.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    # Wrong length:
+    r = client.get(
+        "/v1/az/blocks/rewards?blockhash=" + "a" * 63,
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_BLOCKHASH_INVALID"
+
+    # Non-hex character:
+    r = client.get(
+        "/v1/az/blocks/rewards?blockhash=" + "g" * 64,
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_BLOCKHASH_INVALID"
+
+    # Empty CSV is *not* an error (silently skipped) -> falls back to scan
+    # mode and would 503 on missing ownership; just sanity-check the
+    # invalid-character case via the CSV form:
+    r = client.get(
+        "/v1/az/blocks/rewards?blockhashes=" + "z" * 64,
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_BLOCKHASH_INVALID"
+
+
+def test_az_blocks_rewards_lookup_mode_too_many_returns_422(monkeypatch):
+    """
+    Requesting more than _MAX_BLOCKHASH_LOOKUP unique hashes returns 422
+    AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE before any RPC call is made.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def should_not_call(self, method: str, params=None):  # noqa: ANN001
+        raise AssertionError(f"RPC unexpectedly called: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", should_not_call, raising=True)
+
+    # Build _MAX_BLOCKHASH_LOOKUP + 1 distinct valid hashes via the CSV form.
+    too_many = ",".join(f"{i:064x}" for i in range(az_blocks_module._MAX_BLOCKHASH_LOOKUP + 1))
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhashes={too_many}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE"
+
+
+def test_az_blocks_rewards_lookup_mode_unresolved_blockhash_does_not_crash(monkeypatch):
+    """
+    A specific hash returning a JSON-RPC application error (e.g. -5 Block
+    not found) is recorded in `unresolved_blockhashes` while remaining
+    hashes still resolve normally; whole response is 200.
+    """
+    client = _make_client(monkeypatch)
+
+    block_good = _lookup_block(height=50)
+    hash_good = block_good["hash"]
+    hash_missing = "1" * 64
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_good: block_good, hash_missing: None},
+        tip_height=500,
+        tip_hash="b" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_good}&blockhash={hash_missing}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["lookup_mode"] == "blockhashes"
+    assert body["requested_blockhash_count"] == 2
+    assert body["resolved_blockhash_count"] == 1
+    assert body["unresolved_blockhashes"] == [hash_missing]
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_good]
+
+
+def test_az_blocks_rewards_lookup_mode_time_window_includes_block_at_start_time(monkeypatch):
+    """
+    Time-window filter is half-open: a block whose selected time equals
+    `start_time` is INCLUDED.
+    """
+    client = _make_client(monkeypatch)
+
+    block = _lookup_block(height=60, time=1_700_000_500)
+    hash_at_start = block["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_at_start: block},
+        tip_height=500,
+        tip_hash="a" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_at_start}"
+        "&start_time=1700000500&end_time=1700000600",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_at_start]
+    assert body["filtered_out_blockhashes"] == []
+
+
+def test_az_blocks_rewards_lookup_mode_time_window_excludes_block_at_end_time(monkeypatch):
+    """
+    Time-window filter is half-open: a block whose selected time equals
+    `end_time` is EXCLUDED and listed in `filtered_out_blockhashes`.
+    """
+    client = _make_client(monkeypatch)
+
+    block = _lookup_block(height=70, time=1_700_000_600)
+    hash_at_end = block["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_at_end: block},
+        tip_height=500,
+        tip_hash="9" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_at_end}"
+        "&start_time=1700000500&end_time=1700000600",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["blocks"] == []
+    assert body["filtered_out_blockhashes"] == [hash_at_end]
+    assert body["resolved_blockhash_count"] == 0
+    assert body["requested_blockhash_count"] == 1
+
+
+def test_az_blocks_rewards_lookup_mode_time_window_filters_by_mediantime(monkeypatch):
+    """
+    `time_field=mediantime` makes the half-open interval apply to the
+    block's BIP113 mediantime, not the header `time`.
+    """
+    client = _make_client(monkeypatch)
+
+    # Header time inside the window, but mediantime BELOW start_time:
+    # mediantime mode must filter this block out, proving the selector
+    # actually drives the comparison.
+    block = _lookup_block(
+        height=80,
+        time=1_700_000_550,
+        mediantime=1_700_000_400,
+    )
+    hash_under = block["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_under: block},
+        tip_height=500,
+        tip_hash="8" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_under}"
+        "&start_time=1700000500&end_time=1700000600&time_field=mediantime",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["blocks"] == []
+    assert body["filtered_out_blockhashes"] == [hash_under]
+    assert body["time_filter"]["time_field"] == "mediantime"
+
+
+def test_az_blocks_rewards_lookup_mode_strict_coinbase_validation_still_applies(monkeypatch):
+    """
+    A resolved block with a malformed coinbase (here: negative value)
+    must produce 502 AZ_RPC_INVALID_PAYLOAD just like in scan mode; we
+    do NOT silently demote it to "unresolved".
+    """
+    client = _make_client(monkeypatch)
+
+    bad_block = _make_block(
+        height=90,
+        confirmations=10,
+        vout=[
+            {
+                "n": 0,
+                "value": -1.0,
+                "scriptPubKey": {"type": "pubkeyhash", "address": "AZbad"},
+            }
+        ],
+    )
+    bad_hash = bad_block["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={bad_hash: bad_block},
+        tip_height=500,
+        tip_hash="7" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={bad_hash}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "AZ_RPC_INVALID_PAYLOAD"
+
+
+def test_az_blocks_rewards_lookup_mode_includes_maturity_fields(monkeypatch):
+    """
+    Lookup-mode entries carry the same maturity-related fields as scan
+    mode: `maturity_height`, `is_mature`, `blocks_until_mature`.
+    """
+    client = _make_client(monkeypatch)
+
+    immature = _lookup_block(height=100, confirmations=10)
+    mature = _lookup_block(height=200, confirmations=200, address="AZmature")
+    hash_immature = immature["hash"]
+    hash_mature = mature["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_immature: immature, hash_mature: mature},
+        tip_height=500,
+        tip_hash="6" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_immature}&blockhash={hash_mature}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    by_hash = {b["blockhash"]: b for b in body["blocks"]}
+
+    im = by_hash[hash_immature]
+    assert im["is_mature"] is False
+    assert im["blocks_until_mature"] == 90
+    # height + maturity_confirmations - 1 = 100 + 100 - 1 = 199
+    assert im["maturity_height"] == 199
+    assert im["coinbase_total_sats"] == 5_000_000_000
+
+    mt = by_hash[hash_mature]
+    assert mt["is_mature"] is True
+    assert mt["blocks_until_mature"] == 0
+    # 200 + 100 - 1 = 299
+    assert mt["maturity_height"] == 299
+
+
+def test_az_blocks_rewards_lookup_mode_works_without_ownership_configured(monkeypatch):
+    """
+    Lookup mode bypasses the AZ_REWARD_OWNERSHIP_NOT_CONFIGURED 503: the
+    caller has explicitly named the blocks they want, so the absence of
+    pool/reward-wallet configuration is irrelevant.
+    """
+    client = _make_client(monkeypatch)
+
+    block = _lookup_block(height=110)
+    hash_only = block["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_only: block},
+        tip_height=500,
+        tip_hash="5" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_only}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ownership_configured"] is False
+    assert body["lookup_mode"] == "blockhashes"
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_only]
+    # Classification fields are still present, just unmatched.
+    assert body["blocks"][0]["is_owned_reward"] is False
+    assert body["blocks"][0]["matched_output_indexes"] == []
+    assert body["blocks"][0]["ownership_match"] is None
+
+
+def test_az_blocks_rewards_lookup_mode_rpc_transport_failure_still_502(monkeypatch):
+    """
+    Transport-level RPC failure during a per-hash getblock surfaces as
+    the standard 502 AZ_RPC_UNAVAILABLE; this is NOT silently converted
+    into an unresolved entry.
+    """
+    client = _make_client(monkeypatch)
+
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        if method == "getblockchaininfo":
+            return {"chain": "main", "blocks": 500, "bestblockhash": "4" * 64}
+        if method == "getblock":
+            raise AzcoinRpcTransportError("network down")
+        raise AssertionError(f"unexpected method: {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get(
+        "/v1/az/blocks/rewards?blockhash=" + "a" * 64,
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "AZ_RPC_UNAVAILABLE"

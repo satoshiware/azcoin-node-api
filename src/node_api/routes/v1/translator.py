@@ -188,25 +188,47 @@ def translator_summary(
     return TranslatorSummaryOut.model_validate(tl.translator_summary_payload(settings, want))
 
 
-@router.get("/runtime", response_model=TranslatorMonitoringResponse)
+@router.get("/runtime", response_model=TranslatorMonitoringResponse, deprecated=True)
 def translator_runtime(settings: Settings = Depends(get_settings)) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Operators should prefer ``GET /v1/translator/status`` (merged service
+    health) and ``GET /v1/translator/miner-work/snapshot`` (ledger-ready
+    join). This route is retained for diagnostics only and may be removed
+    in a future release.
+    """
     return _monitoring_envelope(tm.fetch_allowlisted(settings, "/api/v1/health", None))
 
 
-@router.get("/global", response_model=TranslatorMonitoringResponse)
+@router.get("/global", response_model=TranslatorMonitoringResponse, deprecated=True)
 def translator_global(settings: Settings = Depends(get_settings)) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Prefer ``GET /v1/translator/status`` and
+    ``GET /v1/translator/miner-work/snapshot``. Diagnostic-only.
+    """
     return _monitoring_envelope(tm.fetch_allowlisted(settings, "/api/v1/global", None))
 
 
-@router.get("/upstream", response_model=TranslatorMonitoringResponse)
+@router.get("/upstream", response_model=TranslatorMonitoringResponse, deprecated=True)
 def translator_upstream(settings: Settings = Depends(get_settings)) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Prefer ``GET /v1/translator/miner-work/snapshot`` for the joined,
+    ledger-ready upstream channel view. Diagnostic-only.
+    """
     return _monitoring_envelope(tm.fetch_allowlisted(settings, "/api/v1/server", None))
 
 
-@router.get("/upstream/channels", response_model=TranslatorMonitoringResponse)
+@router.get("/upstream/channels", response_model=TranslatorMonitoringResponse, deprecated=True)
 def translator_upstream_channels(
     settings: Settings = Depends(get_settings),
 ) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Prefer ``GET /v1/translator/miner-work/snapshot`` which already joins
+    these channel counters with downstream miner identity. Diagnostic-only.
+    """
     return _monitoring_envelope(tm.fetch_allowlisted(settings, "/api/v1/server/channels", None))
 
 
@@ -231,22 +253,36 @@ def translator_miner_work_snapshot(
     )
 
 
-@router.get("/downstreams", response_model=TranslatorMonitoringResponse)
+@router.get("/downstreams", response_model=TranslatorMonitoringResponse, deprecated=True)
 def translator_downstreams(
     settings: Settings = Depends(get_settings),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
 ) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Prefer ``GET /v1/translator/miner-work/snapshot`` which joins downstream
+    SV1 miner identity with upstream SV2 channel counters. Diagnostic-only.
+    """
     return _monitoring_envelope(
         tm.fetch_allowlisted(settings, "/api/v1/sv1/clients", {"offset": offset, "limit": limit})
     )
 
 
-@router.get("/downstreams/{client_id}", response_model=TranslatorMonitoringResponse)
+@router.get(
+    "/downstreams/{client_id}",
+    response_model=TranslatorMonitoringResponse,
+    deprecated=True,
+)
 def translator_downstream_client(
     client_id: str,
     settings: Settings = Depends(get_settings),
 ) -> TranslatorMonitoringResponse:
+    """Deprecated: raw translator-monitoring passthrough.
+
+    Prefer ``GET /v1/translator/miner-work/snapshot`` for stable miner-identity
+    joins. Diagnostic-only.
+    """
     if not _CLIENT_ID_RE.fullmatch(client_id):
         if not tm.is_monitoring_configured(settings):
             return TranslatorMonitoringResponse(

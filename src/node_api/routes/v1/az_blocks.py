@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -8,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from node_api.services.azcoin_rpc import (
     AzcoinRpcClient,
     AzcoinRpcError,
+    AzcoinRpcResponseError,
     AzcoinRpcWrongChainError,
 )
 from node_api.settings import get_settings
@@ -36,6 +38,17 @@ _MAX_TIME_RANGE_SCAN_BLOCKS = 5000
 # String describing the time interval semantics; echoed in `time_filter` so
 # clients (and ledger code) don't have to encode the rule separately.
 _TIME_INTERVAL_RULE = "start_time <= selected_time < end_time"
+
+# Hard cap on how many block hashes a single direct-lookup request may
+# resolve. Each hash drives one getblock RPC call; without a cap a caller
+# could pin the node by passing thousands of hashes. 500 covers realistic
+# ledger reconciliation batches (a day of blocks fits well below this).
+_MAX_BLOCKHASH_LOOKUP = 500
+
+# Bitcoin/AZCoin block hashes are 32 bytes => 64 lowercase hex characters.
+# We accept upper or mixed case on input and normalize to lowercase before
+# dedupe + RPC dispatch so callers can paste hashes from any source.
+_BLOCKHASH_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def _get_az_rpc() -> AzcoinRpcClient:
@@ -123,6 +136,35 @@ def _raise_time_range_invalid() -> None:
         detail={
             "code": "AZ_REWARD_TIME_RANGE_INVALID",
             "message": "end_time must be strictly greater than start_time.",
+        },
+    )
+
+
+def _raise_blockhash_lookup_too_large() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE",
+            "message": (
+                "Too many blockhashes requested. Per-request limit is "
+                f"{_MAX_BLOCKHASH_LOOKUP}; split the lookup client-side."
+            ),
+        },
+    )
+
+
+def _raise_invalid_blockhash(value: str) -> None:
+    # Truncate the echoed value so a giant pasted token can't bloat the error
+    # body. The 80-char ceiling is comfortably above the 64-hex valid form.
+    safe = value if len(value) <= 80 else value[:77] + "..."
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "AZ_REWARD_BLOCKHASH_INVALID",
+            "message": (
+                "blockhash must be exactly 64 hexadecimal characters: "
+                f"{safe!r}"
+            ),
         },
     )
 
@@ -379,16 +421,115 @@ def _selected_block_time(
     return None
 
 
+def _parse_lookup_blockhashes(
+    blockhash_list: list[str] | None,
+    blockhashes_csv: str | None,
+) -> list[str]:
+    """
+    Combine repeated ``?blockhash=`` and CSV ``?blockhashes=`` query
+    parameters into a single ordered, deduplicated, lowercase-normalized
+    list of 64-hex block hashes.
+
+    * Each entry must match :data:`_BLOCKHASH_RE` (exactly 64 hex chars).
+      The first invalid entry raises 422 ``AZ_REWARD_BLOCKHASH_INVALID``.
+    * Duplicates (case-insensitive) are dropped; first occurrence wins so
+      callers see results in their requested order.
+    * Empty entries (``""`` or ``" "``) are silently skipped, which makes
+      ``blockhashes=h1,,h2`` and trailing commas tolerant for paste-friendly
+      use without becoming a covert validation bypass.
+    * If the deduplicated list exceeds :data:`_MAX_BLOCKHASH_LOOKUP`, raises
+      422 ``AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE``.
+    """
+    raw: list[str] = []
+    if blockhash_list:
+        raw.extend(blockhash_list)
+    if blockhashes_csv:
+        raw.extend(blockhashes_csv.split(","))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        stripped = item.strip()
+        if not stripped:
+            continue
+        if not _BLOCKHASH_RE.fullmatch(stripped):
+            _raise_invalid_blockhash(stripped)
+        normalized = stripped.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    if len(ordered) > _MAX_BLOCKHASH_LOOKUP:
+        _raise_blockhash_lookup_too_large()
+    return ordered
+
+
+def _fetch_classified_block_entry_by_hash(
+    rpc: AzcoinRpcClient,
+    blockhash: str,
+    owned_addresses: frozenset[str],
+    owned_scripts: frozenset[str],
+) -> dict[str, Any] | None:
+    """
+    Look up a single block by its hash and return the normalized,
+    ownership-classified per-block entry on success.
+
+    Returns ``None`` when the RPC reports a JSON-RPC application error
+    for *this specific hash* (e.g. Bitcoin Core ``-5 Block not found`` /
+    invalid hash format / unknown block) or when the returned payload is
+    structurally unusable (e.g. missing height). The caller appends to
+    ``unresolved_blockhashes`` in that case.
+
+    ``AzcoinRpcTransportError`` / ``AzcoinRpcHttpError`` /
+    ``AzcoinRpcWrongChainError`` are intentionally propagated; they signal
+    that the *transport* or *chain* is wrong, in which case the entire
+    response should fail closed with the standard 502/503 envelope rather
+    than silently swallowing the failure into "unresolved".
+
+    A malformed coinbase (negative value, sub-satoshi precision, missing
+    vouts, etc.) raises ``AZ_RPC_INVALID_PAYLOAD`` exactly like scan mode:
+    ledger-truth is preserved by failing loudly rather than returning a
+    suspect total.
+    """
+    try:
+        block = rpc.call("getblock", [blockhash, 2])
+    except AzcoinRpcResponseError:
+        return None
+    if not isinstance(block, dict):
+        return None
+    height = block.get("height")
+    if not isinstance(height, int) or isinstance(height, bool) or height < 0:
+        return None
+    try:
+        entry = _build_block_entry(height, block)
+    except ValueError as exc:
+        _raise_invalid_payload(f"block {blockhash}: {exc}")
+    is_owned, matched_indexes, ownership_match = _classify_block_ownership(
+        entry["outputs"], owned_addresses, owned_scripts
+    )
+    entry["is_owned_reward"] = is_owned
+    entry["matched_output_indexes"] = matched_indexes
+    entry["ownership_match"] = ownership_match
+    return entry
+
+
 @router.get("/rewards")
 def block_rewards(
     limit: int = Query(default=50, ge=1, le=200),
     owned_only: bool = Query(
         default=True,
         description=(
-            "When true (default), return only blocks whose coinbase paid a "
-            "configured ownership address or scriptPubKey hex. When false, "
-            "return every recent chain block with ownership classification "
-            "fields populated for inspection."
+            "Scan-mode only. When true (default), return only blocks whose "
+            "coinbase paid a configured AZ_REWARD_OWNERSHIP_* address or "
+            "scriptPubKey hex; this is *configured coinbase/reward-wallet "
+            "filtering*, not SC-node ownership identification (a shared "
+            "pool wallet does not distinguish per-node ownership). When "
+            "false, return every recent chain block with ownership "
+            "classification fields populated for inspection. Ignored when "
+            "`blockhash` / `blockhashes` are supplied."
         ),
     ),
     start_time: int | None = Query(
@@ -396,8 +537,8 @@ def block_rewards(
         ge=0,
         description=(
             "Inclusive lower bound (Unix seconds) for the selected block time "
-            "field. Must be supplied together with end_time; otherwise the "
-            "endpoint falls back to limit-based scanning."
+            "field. Must be supplied together with end_time. Applies in "
+            "scan mode and in blockhash-lookup mode."
         ),
     ),
     end_time: int | None = Query(
@@ -416,6 +557,25 @@ def block_rewards(
             "the active chain; enables early scan termination)."
         ),
     ),
+    blockhash: list[str] | None = Query(
+        default=None,
+        description=(
+            "Repeated query parameter for direct blockhash lookup, e.g. "
+            "`?blockhash=<h1>&blockhash=<h2>`. Each value must be exactly "
+            "64 hexadecimal characters. Activates blockhash-lookup mode "
+            "(no height scan, `limit` ignored). May be combined with "
+            "`blockhashes` (CSV) and with the optional time-window filter."
+        ),
+    ),
+    blockhashes: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated fallback for direct blockhash lookup. Equivalent "
+            "to repeated `blockhash` parameters; the two forms may be mixed "
+            "and are deduplicated together (case-insensitive, request-order "
+            "preserving)."
+        ),
+    ),
 ) -> dict[str, Any]:
     # ----- Phase 1: cross-field validation of time-window params ------------
     # `Query(ge=0)` already covers start_time>=0 and Literal already covers
@@ -429,13 +589,26 @@ def block_rewards(
         if end_time <= start_time:
             _raise_time_range_invalid()
 
+    # ----- Phase 1b: blockhash lookup mode parsing --------------------------
+    # Direct lookup overrides the height-walk modes entirely. We validate
+    # and dedupe up-front so 422s land before any RPC call is made.
+    lookup_hashes = _parse_lookup_blockhashes(blockhash, blockhashes)
+    blockhash_lookup_mode = bool(lookup_hashes)
+
     # ----- Phase 2: ownership config + 503 fail-closed ----------------------
+    # In blockhash-lookup mode the caller has already decided exactly which
+    # blocks they want (typically from translator block-found events), so
+    # we don't gate the lookup on ownership configuration: classification
+    # fields are still populated when config is present, but `owned_only`
+    # is treated as "off" for filtering purposes. This avoids returning a
+    # confusing 503 when a ledger asks for a specific hash on a node where
+    # AZ_REWARD_OWNERSHIP_* simply hasn't been wired up.
     settings = get_settings()
     owned_addresses = _parse_ownership_addresses(settings.az_reward_ownership_addresses)
     owned_scripts = _parse_ownership_scripts(settings.az_reward_ownership_script_pubkeys)
     ownership_configured = bool(owned_addresses or owned_scripts)
 
-    if owned_only and not ownership_configured:
+    if owned_only and not ownership_configured and not blockhash_lookup_mode:
         _raise_ownership_not_configured()
 
     # ----- Phase 3: fetch tip metadata --------------------------------------
@@ -458,16 +631,39 @@ def block_rewards(
         _raise_az_unavailable()
 
     blocks: list[dict[str, Any]] = []
+    unresolved_blockhashes: list[str] = []
+    filtered_out_blockhashes: list[str] = []
 
     # ----- Phase 4: walk blocks ---------------------------------------------
-    # Two scan modes:
+    # Three scan modes:
+    #   * Blockhash lookup: resolve each user-supplied hash with getblock(2);
+    #     no height walk, `limit` ignored.
     #   * Time-window: walk tip -> genesis, capped by _MAX_TIME_RANGE_SCAN_BLOCKS,
     #     with optional early termination for time_field=="mediantime".
     #   * Limit-based (legacy): walk tip -> tip-limit+1.
     # Strict coinbase validation runs unconditionally on every fetched block
     # so callers can never receive a partial/zeroed reward total.
     try:
-        if time_window_mode:
+        if blockhash_lookup_mode:
+            for input_hash in lookup_hashes:
+                entry = _fetch_classified_block_entry_by_hash(
+                    rpc, input_hash, owned_addresses, owned_scripts
+                )
+                if entry is None:
+                    unresolved_blockhashes.append(input_hash)
+                    continue
+                if time_window_mode:
+                    assert start_time is not None and end_time is not None
+                    selected_time = _selected_block_time(entry, time_field)
+                    in_window = (
+                        selected_time is not None
+                        and start_time <= selected_time < end_time
+                    )
+                    if not in_window:
+                        filtered_out_blockhashes.append(input_hash)
+                        continue
+                blocks.append(entry)
+        elif time_window_mode:
             assert start_time is not None and end_time is not None  # narrowed for type checkers
             scanned = 0
             for height in range(tip_height, -1, -1):
@@ -521,6 +717,11 @@ def block_rewards(
         "maturity_confirmations": _MATURITY_CONFIRMATIONS,
         "owned_only": owned_only,
         "ownership_configured": ownership_configured,
+        "lookup_mode": "blockhashes" if blockhash_lookup_mode else "scan",
+        "requested_blockhash_count": len(lookup_hashes),
+        "resolved_blockhash_count": len(blocks),
+        "unresolved_blockhashes": unresolved_blockhashes,
+        "filtered_out_blockhashes": filtered_out_blockhashes,
         "time_filter": {
             "start_time": start_time,
             "end_time": end_time,

@@ -116,7 +116,7 @@ curl \
   http://127.0.0.1:8080/v1/translator/status
 ```
 
-Replace `change-me` with the `AZ_API_DEV_TOKEN` value from `/etc/azcoin-node-api/azcoin-node-api.env`. If translator monitoring is configured, you can also verify a live route such as `/v1/translator/runtime`.
+Replace `change-me` with the `AZ_API_DEV_TOKEN` value from `/etc/azcoin-node-api/azcoin-node-api.env`. If translator monitoring is configured, you can also verify a live route such as `/v1/translator/miner-work/snapshot` (preferred) or `/v1/translator/status`.
 
 ## Running with Docker
 
@@ -142,20 +142,28 @@ Notes:
 - **GET** `/v1/az/mempool/info` (protected; calls AZCoin `getmempoolinfo` and returns normalized mempool stats)
 - **GET** `/v1/az/wallet/summary` (protected; calls AZCoin wallet RPC and returns normalized balances summary)
 - **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)
+- **GET** `/v1/az/blocks/rewards` (protected; recent reward-block details with strict satoshi conversion, ownership classification, optional time-window filtering, and **direct blockhash lookup**. Two modes:
+  - *scan mode (default)* — query: `limit` (1–200, default 50), `owned_only` (default `true`; configured pool/reward-wallet filter, see caveat), `start_time` / `end_time` / `time_field` for half-open interval filtering.
+  - *blockhash-lookup mode* — repeated `?blockhash=<64hex>` and/or comma-separated `?blockhashes=<h1>,<h2>` activate direct lookup (max 500 unique hashes per request; ignores `limit`; bypasses the `owned_only` precheck because the caller is naming exact blocks). May be combined with `start_time` / `end_time` / `time_field`.
+  - Top-level metadata always emitted: `lookup_mode` (`"scan"` | `"blockhashes"`), `requested_blockhash_count`, `resolved_blockhash_count`, `unresolved_blockhashes`, `filtered_out_blockhashes`, `time_filter`. See [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 2.1.)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 - **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
 - **GET** `/v1/translator/status` (protected; merged health: log file panel plus optional live monitoring probe; overall `status` is `ok`, `degraded`, or `unconfigured`)
 - **GET** `/v1/translator/summary` (protected; log-backed status plus level/category counts over the log tail; query: `lines` default `500`, max `2000`)
-- **GET** `/v1/translator/runtime` (protected; live `GET .../api/v1/health` from the translator monitoring server, allowlisted only)
-- **GET** `/v1/translator/global` (protected; live `GET .../api/v1/global`)
-- **GET** `/v1/translator/upstream` (protected; live `GET .../api/v1/server`)
-- **GET** `/v1/translator/upstream/channels` (protected; live `GET .../api/v1/server/channels`)
-- **GET** `/v1/translator/downstreams` (protected; live `GET .../api/v1/sv1/clients`; query: `offset`, `limit`)
 - **GET** `/v1/translator/miner-work/snapshot` (protected; ledger-ready normalized join of `/upstream/channels` and `/downstreams` keyed by `channel_id`; ledger-sensitive numerics like `share_work_sum` / `best_diff` / `hashrate` are returned as strings; fail-closed when either side is unreachable; see [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 5)
-- **GET** `/v1/translator/downstreams/{client_id}` (protected; live `GET .../api/v1/sv1/clients/{client_id}`)
 - **GET** `/v1/translator/logs/tail` (protected; newest-first normalized records from the translator log tail; query: `lines`, optional `level`, `contains`)
 - **GET** `/v1/translator/events/recent` (protected; newest-first normalized records; query: `limit`, optional `category`, `level`, `contains`)
 - **GET** `/v1/translator/errors/recent` (protected; newest-first `WARN`/`ERROR` records; query: `limit`)
+
+Deprecated routes (kept for diagnostics; OpenAPI marks them with `deprecated: true` — do not build new clients on top of these, prefer the canonical alternatives noted above):
+
+- **GET** `/v1/translator/runtime` *(deprecated)* — live `GET .../api/v1/health` passthrough; use `/v1/translator/status` instead.
+- **GET** `/v1/translator/global` *(deprecated)* — live `GET .../api/v1/global` passthrough; use `/v1/translator/status`.
+- **GET** `/v1/translator/upstream` *(deprecated)* — live `GET .../api/v1/server` passthrough; use `/v1/translator/miner-work/snapshot`.
+- **GET** `/v1/translator/upstream/channels` *(deprecated)* — live `GET .../api/v1/server/channels` passthrough; use `/v1/translator/miner-work/snapshot`.
+- **GET** `/v1/translator/downstreams` *(deprecated)* — live `GET .../api/v1/sv1/clients` passthrough; use `/v1/translator/miner-work/snapshot`.
+- **GET** `/v1/translator/downstreams/{client_id}` *(deprecated)* — live `GET .../api/v1/sv1/clients/{client_id}` passthrough; use `/v1/translator/miner-work/snapshot`.
+- **GET** `/v1/events/recent-legacy` *(deprecated)* — pre-EventStore in-memory ZMQ buffer; the canonical recent-events endpoint is the EventStore-backed `GET /v1/events/recent`.
 
 Log-backed translator routes reflect **historical** lines from `TRANSLATOR_LOG_PATH` (tail, incidents, aggregates). Monitoring-backed routes reflect **live** translator process state from `TRANSLATOR_MONITORING_BASE_URL` only on a fixed allowlist (no generic proxy). The API does not add config writes, restarts, Prometheus passthrough, or arbitrary upstream paths.
 

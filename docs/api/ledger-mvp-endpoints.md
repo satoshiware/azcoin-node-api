@@ -122,15 +122,69 @@ clarified.
 
 - **Truth role:** chain reward truth (section 1.1).
 - **Auth:** protected (`Authorization: Bearer <token>`).
-- **What it does:** walks the active AZCoin chain from tip downward and
-  emits one entry per accepted block, with the strict integer
-  coinbase-total in satoshis, per-output details, maturity fields, and
-  optional time-window / "ownership" filters.
-- **Source:** AZCoin RPC `getblockchaininfo`, `getblockhash`,
-  `getblock`.
-- **Key query params (existing):** `limit`, `owned_only`, `start_time`,
-  `end_time`, `time_field`. **`owned_only` is deprecated by name — see
-  section 4.**
+- **What it does:** returns one normalized entry per accepted block,
+  each with the strict integer coinbase-total in satoshis, per-output
+  details, maturity fields, and ownership classification fields. The
+  endpoint operates in two mutually exclusive modes:
+  1. **Scan mode (default).** Walks the active AZCoin chain from tip
+     downward, optionally filtered by a half-open time window. Driven
+     by `limit` *or* `start_time` / `end_time` / `time_field`.
+  2. **Blockhash-lookup mode.** Resolves a caller-supplied set of
+     block hashes directly via `getblock(hash, 2)` — no height walk,
+     `limit` ignored. This is the path the ledger uses to verify
+     translator-provided block-found hashes without scanning large
+     time windows.
+- **Source:** AZCoin RPC `getblockchaininfo` (always; for tip metadata
+  + chain validation), `getblockhash` (scan modes only), `getblock`
+  (every mode).
+- **Key query params (scan mode):** `limit` (1–200, default 50),
+  `owned_only` (default `true` — see section 4 for the naming
+  caveat), `start_time`, `end_time`, `time_field` (`"time"` |
+  `"mediantime"`).
+- **Key query params (blockhash-lookup mode):**
+  - `blockhash` (repeatable, e.g. `?blockhash=<h1>&blockhash=<h2>`).
+    Each value must be exactly 64 hexadecimal characters; mixed case
+    is normalized to lowercase before deduplication.
+  - `blockhashes` (comma-separated fallback,
+    `?blockhashes=<h1>,<h2>,<h3>`). May be combined with repeated
+    `blockhash`; the two are deduplicated together while preserving
+    request order (first occurrence wins).
+  - `start_time` / `end_time` / `time_field` are honoured when
+    supplied: any resolved block whose selected time field falls
+    outside the half-open `[start_time, end_time)` interval is
+    excluded and its hash is reported in `filtered_out_blockhashes`.
+  - **Per-request cap:** 500 unique hashes
+    (`AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE` returns 422 above the
+    cap). Invalid hash format returns 422
+    `AZ_REWARD_BLOCKHASH_INVALID`.
+  - **Ownership precheck is bypassed in lookup mode** — the caller
+    has already named the exact blocks they want, so an
+    unconfigured `AZ_REWARD_OWNERSHIP_*` does not produce
+    `AZ_REWARD_OWNERSHIP_NOT_CONFIGURED`. Classification fields
+    (`is_owned_reward`, `ownership_match`,
+    `matched_output_indexes`) are still emitted on every entry when
+    config is present.
+- **Top-level response metadata (every mode):**
+  - `lookup_mode`: `"scan"` | `"blockhashes"`.
+  - `requested_blockhash_count`: number of unique hashes the caller
+    asked for (always `0` in scan mode).
+  - `resolved_blockhash_count`: number of entries returned in
+    `blocks` (`== len(blocks)`).
+  - `unresolved_blockhashes`: hashes the RPC reported as
+    not-found / invalid (e.g. Bitcoin Core `-5 Block not found`).
+    A single bad hash does not crash the whole response.
+  - `filtered_out_blockhashes`: hashes that resolved successfully
+    but were excluded by the optional time window (or whose
+    selected time field was missing / non-int).
+- **Strict-coinbase invariant:** preserved in both modes — a malformed
+  coinbase (negative value, sub-satoshi precision, missing vouts,
+  etc.) raises 502 `AZ_RPC_INVALID_PAYLOAD` rather than being
+  silently demoted to "unresolved". Ledger truth fails loudly.
+- **Transport invariant:** `AzcoinRpcTransportError` /
+  `AzcoinRpcHttpError` / `AzcoinRpcWrongChainError` propagate to the
+  standard `AZ_RPC_UNAVAILABLE` (502) / `AZ_WRONG_CHAIN` (503)
+  envelopes; lookup mode never silently swallows transport failures
+  into `unresolved_blockhashes`.
 
 ### 2.2 `GET /v1/translator/downstreams`
 
@@ -499,6 +553,25 @@ blocks (matched by `(height, blockhash)` pair).
 The route internally consumes `/v1/az/blocks/rewards` with the
 interval's `start_time`, `end_time`, and `time_field`. It does not
 re-implement reward truth.
+
+**Shared-pool deployments (recommended).** When the deployment uses a
+shared pool wallet (section 1.4), reward attribution from chain-side
+coinbase inspection is structurally impossible. In that case the
+ledger should not rely on `owned_only` filtering; instead it should:
+
+1. Collect block hashes from translator block-found logs / events
+   (today: `/v1/translator/events/recent`; future:
+   `/v1/translator/block-candidates`, section 7).
+2. Call `/v1/az/blocks/rewards` in **blockhash-lookup mode**
+   (`?blockhash=<h>` repeated, or `?blockhashes=<h1>,<h2>`) with the
+   interval's optional time window applied for sanity. This
+   verifies each translator-claimed block exists on the active chain
+   and returns its strict coinbase total in satoshis without
+   scanning a height range.
+
+Hashes the RPC cannot resolve appear in `unresolved_blockhashes` on
+the response and should be surfaced verbatim to the operator (likely
+indicates a chain reorg or a translator-side false-positive).
 
 **Request:**
 
