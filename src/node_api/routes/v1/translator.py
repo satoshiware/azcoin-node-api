@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from node_api.services import translator_logs as tl
+from node_api.services import translator_miner_work as tmw
 from node_api.services import translator_monitoring as tm
 from node_api.settings import Settings, get_settings
 
@@ -77,6 +78,82 @@ class TranslatorMonitoringResponse(BaseModel):
     detail: str | None = None
 
 
+class MinerWorkSnapshotItem(BaseModel):
+    """One channel-keyed row of the joined miner-work snapshot.
+
+    Field-by-field provenance is documented in
+    ``services/translator_miner_work.py``. The numeric-string fields
+    (share_work_sum, best_diff, hashrate, nominal_hashrate) are intentional:
+    downstream ledger arithmetic must use Decimal / arbitrary-width int math
+    and never IEEE-754 float.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    channel_id: int
+    client_id: int | None = None
+
+    worker_identity: str | None = None
+    authorized_worker_name: str | None = None
+    downstream_user_identity: str | None = None
+    upstream_user_identity: str | None = None
+
+    shares_acknowledged: int | None = None
+    shares_submitted: int | None = None
+    shares_rejected: int | None = None
+
+    share_work_sum: str | None = None
+    best_diff: str | None = None
+    blocks_found: int | None = None
+
+    hashrate: str | None = None
+    nominal_hashrate: str | None = None
+
+    downstream_target_hex: str | None = None
+    upstream_target_hex: str | None = None
+
+    extranonce1_hex: str | None = None
+    extranonce_prefix_hex: str | None = None
+    extranonce2_len: int | None = None
+    full_extranonce_size: int | None = None
+    rollable_extranonce_size: int | None = None
+
+    version_rolling: bool | None = None
+    version_rolling_mask: str | None = None
+    version_rolling_min_bit: str | None = None
+
+    join_status: Literal["joined", "downstream_only", "upstream_only"]
+
+
+class MinerWorkSnapshotData(BaseModel):
+    """``data`` payload of the miner-work snapshot response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int
+    items: list[MinerWorkSnapshotItem]
+
+
+class MinerWorkSnapshotResponse(BaseModel):
+    """Top-level envelope for ``GET /v1/translator/miner-work/snapshot``.
+
+    ``snapshot_time`` is Unix seconds at the moment the join was assembled,
+    or ``null`` when the snapshot is not actually fresh (translator
+    unconfigured or fail-closed degraded). ``source`` is fixed to
+    ``"translator"`` -- a future revision may add other sources, but for
+    now this lets ledger consumers attribute the row deterministically.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok", "degraded", "unconfigured"]
+    configured: bool
+    snapshot_time: int | None = None
+    source: Literal["translator"]
+    data: MinerWorkSnapshotData
+    detail: str | None = None
+
+
 def _clamp_lines(lines: int, settings: Settings) -> int:
     return max(1, min(lines, settings.translator_log_max_lines))
 
@@ -131,6 +208,27 @@ def translator_upstream_channels(
     settings: Settings = Depends(get_settings),
 ) -> TranslatorMonitoringResponse:
     return _monitoring_envelope(tm.fetch_allowlisted(settings, "/api/v1/server/channels", None))
+
+
+@router.get("/miner-work/snapshot", response_model=MinerWorkSnapshotResponse)
+def translator_miner_work_snapshot(
+    settings: Settings = Depends(get_settings),
+) -> MinerWorkSnapshotResponse:
+    """Normalized join of upstream channel counters with downstream miner identity.
+
+    Truth role: TRANSLATOR LOCAL-WORK TRUTH (see
+    ``docs/api/ledger-mvp-endpoints.md`` section 1.2). This endpoint is the
+    single stable shape that the future ledger interval-snapshot endpoints
+    will read from; do not have ledger code re-implement the join over the
+    raw ``/downstreams`` and ``/upstream/channels`` passthroughs.
+
+    Fail-closed: if exactly one of the two raw fetches succeeds, the
+    response is ``status: degraded`` with an empty items list rather than
+    half-joined data.
+    """
+    return MinerWorkSnapshotResponse.model_validate(
+        tmw.build_miner_work_snapshot(settings)
+    )
 
 
 @router.get("/downstreams", response_model=TranslatorMonitoringResponse)

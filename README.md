@@ -43,6 +43,8 @@ Copy `.env.example` to `.env`.
 - **AZ_EXPECTED_CHAIN**: expected AZCoin chain name (default: `main`)
 - **AZ_REWARD_OWNERSHIP_ADDRESSES**: comma-separated list of coinbase payout addresses owned by this node, used by `GET /v1/az/blocks/rewards` to classify blocks as owned. Whitespace is trimmed and empty entries are dropped; addresses match exactly. Required (along with `AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS` or both) when calling `/v1/az/blocks/rewards?owned_only=true`.
 - **AZ_REWARD_OWNERSHIP_SCRIPT_PUBKEYS**: comma-separated list of coinbase `scriptPubKey` hex strings owned by this node. Whitespace is trimmed, empty entries are dropped, and matching is case-insensitive.
+
+  > ⚠️ `owned_only` and `AZ_REWARD_OWNERSHIP_*` filter blocks whose coinbase paid into a configured **pool wallet**. They do **not** identify which SC node produced the block, because all SC nodes currently pay into the same shared pool wallet. Per-SC-node attribution requires translator-side block-candidate logging and is not provided by `/v1/az/blocks/rewards`. See [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) for the full reward / ledger MVP contract and the planned rename to `AZ_REWARD_POOL_*` / `pool_only`.
 - **BTC_RPC_URL**: Bitcoin JSON-RPC URL (example: `http://127.0.0.1:8332`)
 - **BTC_RPC_COOKIE_FILE**: Path to Bitcoin RPC cookie file (preferred; used when same-stack with bitcoind)
 - **BTC_RPC_USER** / **BTC_RPC_PASSWORD**: Fallback for remote or non-shared-filesystem deployments
@@ -149,6 +151,7 @@ Notes:
 - **GET** `/v1/translator/upstream` (protected; live `GET .../api/v1/server`)
 - **GET** `/v1/translator/upstream/channels` (protected; live `GET .../api/v1/server/channels`)
 - **GET** `/v1/translator/downstreams` (protected; live `GET .../api/v1/sv1/clients`; query: `offset`, `limit`)
+- **GET** `/v1/translator/miner-work/snapshot` (protected; ledger-ready normalized join of `/upstream/channels` and `/downstreams` keyed by `channel_id`; ledger-sensitive numerics like `share_work_sum` / `best_diff` / `hashrate` are returned as strings; fail-closed when either side is unreachable; see [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 5)
 - **GET** `/v1/translator/downstreams/{client_id}` (protected; live `GET .../api/v1/sv1/clients/{client_id}`)
 - **GET** `/v1/translator/logs/tail` (protected; newest-first normalized records from the translator log tail; query: `lines`, optional `level`, `contains`)
 - **GET** `/v1/translator/events/recent` (protected; newest-first normalized records; query: `limit`, optional `category`, `level`, `contains`)
