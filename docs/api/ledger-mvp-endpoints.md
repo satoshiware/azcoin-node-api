@@ -143,6 +143,11 @@ clarified.
   `owned_only` (default `true` — see section 4 for the naming
   caveat), `start_time`, `end_time`, `time_field` (`"time"` |
   `"mediantime"`).
+  - Scan behavior note: `time_field=mediantime` is the direct monotonic
+    scan path. `time_field=time` still applies the half-open interval to
+    the block header `time`, but the traversal itself is bounded by a
+    `mediantime` anchor plus safety slack so narrow debug windows do not
+    degrade into an unbounded tip-to-genesis scan.
 - **Key query params (blockhash-lookup mode):**
   - `blockhash` (repeatable, e.g. `?blockhash=<h1>&blockhash=<h2>`).
     Each value must be exactly 64 hexadecimal characters; mixed case

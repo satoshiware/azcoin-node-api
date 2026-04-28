@@ -1,9 +1,9 @@
 git status
 git add -A
-git commit -m "Updating fixes to expose more translator data. 0.1.9-r1"
-git tag v0.1.9-r1   
+git commit -m "Updating fixes to reward endpoint to improve time turnaround. 0.1.9-r2"
+git tag v0.1.9-r2   
 git push origin main
-git push origin v0.1.9-r1
+git push origin v0.1.9-r2
 
 $SHA = (git rev-parse --short HEAD).Trim()
 

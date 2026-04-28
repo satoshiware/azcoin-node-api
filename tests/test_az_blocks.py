@@ -1288,6 +1288,168 @@ def test_az_blocks_rewards_time_window_mediantime_early_terminates_below_start(m
     assert fetched_heights == [100, 99, 98]
 
 
+def test_az_blocks_rewards_time_window_block_time_narrow_window_uses_mediantime_anchor(
+    monkeypatch,
+):
+    """
+    `time_field=time` must still filter by block.time, but the scan should be
+    bounded by mediantime so a narrow operator window does not degrade into a
+    long tip-to-genesis walk.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 100
+    start_time = 1_700_000_500
+    end_time = 1_700_000_600
+    blocks_by_height = {
+        100: _make_block(
+            height=100,
+            confirmations=1,
+            time=1_700_000_700,
+            mediantime=1_700_000_700,
+            vout=_coinbase_vout(),
+        ),
+        99: _make_block(
+            height=99,
+            confirmations=2,
+            time=1_700_000_550,
+            mediantime=1_700_000_560,
+            vout=_coinbase_vout(),
+        ),
+        98: _make_block(
+            height=98,
+            confirmations=3,
+            time=start_time,
+            mediantime=1_700_000_520,
+            vout=_coinbase_vout(),
+        ),
+        # First block below the mediantime anchor lower bound. It is fetched
+        # once, excluded, and then the walk stops before any deeper height.
+        97: _make_block(
+            height=97,
+            confirmations=4,
+            time=1_699_993_100,
+            mediantime=1_699_993_200,
+            vout=_coinbase_vout(),
+        ),
+    }
+
+    fetched_heights: list[int] = []
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        if method == "getblockchaininfo":
+            return {
+                "chain": "main",
+                "blocks": tip_height,
+                "bestblockhash": blocks_by_height[100]["hash"],
+            }
+        if method == "getblockhash":
+            height = params[0]
+            fetched_heights.append(height)
+            return blocks_by_height[height]["hash"]
+        if method == "getblock":
+            blockhash, verbosity = params
+            assert verbosity == 2
+            for block in blocks_by_height.values():
+                if block["hash"] == blockhash:
+                    return block
+            raise AssertionError(f"unknown blockhash {blockhash}")
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?owned_only=false&start_time={start_time}&end_time={end_time}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert [b["height"] for b in body["blocks"]] == [99, 98]
+    assert body["time_filter"]["time_field"] == "time"
+    assert fetched_heights == [100, 99, 98, 97]
+
+
+def test_az_blocks_rewards_time_window_block_time_zero_results_returns_quickly(
+    monkeypatch,
+):
+    """
+    A narrow block-time window with no matching headers must still stop on the
+    mediantime anchor and return an empty set promptly.
+    """
+    client = _make_client(monkeypatch)
+
+    tip_height = 100
+    start_time = 1_700_000_500
+    end_time = 1_700_000_600
+    blocks_by_height = {
+        100: _make_block(
+            height=100,
+            confirmations=1,
+            time=1_700_000_800,
+            mediantime=1_700_000_820,
+            vout=_coinbase_vout(),
+        ),
+        99: _make_block(
+            height=99,
+            confirmations=2,
+            time=1_700_000_700,
+            mediantime=1_700_000_710,
+            vout=_coinbase_vout(),
+        ),
+        98: _make_block(
+            height=98,
+            confirmations=3,
+            time=1_700_000_300,
+            mediantime=1_700_000_320,
+            vout=_coinbase_vout(),
+        ),
+        97: _make_block(
+            height=97,
+            confirmations=4,
+            time=1_699_993_100,
+            mediantime=1_699_993_200,
+            vout=_coinbase_vout(),
+        ),
+    }
+
+    fetched_heights: list[int] = []
+    from node_api.routes.v1 import az_blocks as az_blocks_module
+
+    def fake_call(self, method: str, params=None):  # noqa: ANN001
+        if method == "getblockchaininfo":
+            return {
+                "chain": "main",
+                "blocks": tip_height,
+                "bestblockhash": blocks_by_height[100]["hash"],
+            }
+        if method == "getblockhash":
+            height = params[0]
+            fetched_heights.append(height)
+            return blocks_by_height[height]["hash"]
+        if method == "getblock":
+            blockhash, verbosity = params
+            assert verbosity == 2
+            for block in blocks_by_height.values():
+                if block["hash"] == blockhash:
+                    return block
+            raise AssertionError(f"unknown blockhash {blockhash}")
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(az_blocks_module.AzcoinRpcClient, "call", fake_call, raising=True)
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?owned_only=false&start_time={start_time}&end_time={end_time}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["blocks"] == []
+    assert fetched_heights == [100, 99, 98, 97]
+
+
 @pytest.mark.parametrize("time_field", ["time", "mediantime"])
 def test_az_blocks_rewards_time_window_excludes_block_with_missing_selected_time(
     monkeypatch, time_field
@@ -1501,9 +1663,9 @@ def test_az_blocks_rewards_time_window_max_scan_guard_returns_too_large(monkeypa
     client = _make_client(monkeypatch)
 
     tip_height = 10
-    # All blocks have time far above the window so none match. With time_field
-    # =time the scan does NOT early-terminate, so the guard is the only thing
-    # that can stop the walk.
+    # These mocked blocks intentionally omit mediantime, so the time-field=time
+    # path has no monotonic anchor available and must still fail closed on the
+    # scan guard instead of walking unboundedly.
     blocks_by_height = {
         h: _make_block(
             height=h,
@@ -2088,13 +2250,14 @@ def test_az_blocks_rewards_lookup_mode_time_window_includes_block_at_start_time(
 
     r = client.get(
         f"/v1/az/blocks/rewards?blockhash={hash_at_start}"
-        "&start_time=1700000500&end_time=1700000600",
+        "&start_time=1700000500&end_time=1700000600&time_field=time",
         headers=AUTH_HEADER,
     )
     assert r.status_code == 200
     body = r.json()
     assert [b["blockhash"] for b in body["blocks"]] == [hash_at_start]
     assert body["filtered_out_blockhashes"] == []
+    assert body["time_filter"]["time_field"] == "time"
 
 
 def test_az_blocks_rewards_lookup_mode_time_window_excludes_block_at_end_time(monkeypatch):
@@ -2116,7 +2279,7 @@ def test_az_blocks_rewards_lookup_mode_time_window_excludes_block_at_end_time(mo
 
     r = client.get(
         f"/v1/az/blocks/rewards?blockhash={hash_at_end}"
-        "&start_time=1700000500&end_time=1700000600",
+        "&start_time=1700000500&end_time=1700000600&time_field=time",
         headers=AUTH_HEADER,
     )
     assert r.status_code == 200
@@ -2126,6 +2289,7 @@ def test_az_blocks_rewards_lookup_mode_time_window_excludes_block_at_end_time(mo
     assert body["resolved_blockhash_count"] == 0
     assert body["requested_blockhash_count"] == 1
     assert body["stale_blockhashes"] == []
+    assert body["time_filter"]["time_field"] == "time"
 
 
 def test_az_blocks_rewards_lookup_mode_time_window_filters_by_mediantime(monkeypatch):

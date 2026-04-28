@@ -35,6 +35,14 @@ _OWNERSHIP_MATCH_BOTH = "coinbase_output_address_and_script_pub_key"
 # 7 weeks of 10-minute blocks; queries that need more must be split client-side.
 _MAX_TIME_RANGE_SCAN_BLOCKS = 5000
 
+# For `time_field=time` we no longer walk by header time itself because block
+# time is not monotonic enough to support safe early termination. Instead we
+# anchor the scan to monotonic `mediantime` and still filter inclusion by
+# `block["time"]`. The 2-hour slack mirrors Bitcoin/AZCoin header future-time
+# tolerance, which is large enough to cover normal `time` vs `mediantime` skew
+# while still keeping narrow operator windows bounded in practice.
+_TIME_FIELD_TIME_ANCHOR_SLACK_SECS = 2 * 60 * 60
+
 # String describing the time interval semantics; echoed in `time_filter` so
 # clients (and ledger code) don't have to encode the rule separately.
 _TIME_INTERVAL_RULE = "start_time <= selected_time < end_time"
@@ -421,6 +429,28 @@ def _selected_block_time(
     return None
 
 
+def _scan_anchor_time(
+    entry: dict[str, Any], time_field: Literal["time", "mediantime"]
+) -> int | None:
+    """Return the monotonic-ish time used only to bound the scan walk.
+
+    `time_field=mediantime` uses `mediantime` directly, preserving the existing
+    early-termination behavior. `time_field=time` still filters result inclusion
+    by `block["time"]`, but bounds the traversal by `mediantime` so tight
+    windows do not degrade into tip-to-genesis walks.
+    """
+    return _selected_block_time(entry, "mediantime")
+
+
+def _scan_anchor_lower_bound(
+    start_time: int, time_field: Literal["time", "mediantime"]
+) -> int:
+    """Return the lower bound that safely ends a downward time-window scan."""
+    if time_field == "mediantime":
+        return start_time
+    return max(0, start_time - _TIME_FIELD_TIME_ANCHOR_SLACK_SECS)
+
+
 def _is_lookup_mode_payable_main_chain(entry: dict[str, Any]) -> bool:
     """
     Return True only when a blockhash-lookup result is safe for ledger
@@ -683,8 +713,11 @@ def block_rewards(
     #     unresolved / stale / ok before any time-window filter runs, so
     #     stale (non-payable) blocks never pollute blocks[] or
     #     filtered_out_blockhashes. Ledger consumers must use only blocks[].
-    #   * Time-window: walk tip -> genesis, capped by _MAX_TIME_RANGE_SCAN_BLOCKS,
-    #     with optional early termination for time_field=="mediantime".
+    #   * Time-window: walk tip -> older heights, capped by
+    #     _MAX_TIME_RANGE_SCAN_BLOCKS. `time_field=mediantime` preserves the
+    #     existing exact early-termination rule. `time_field=time` now uses
+    #     monotonic `mediantime` as the traversal anchor, while still filtering
+    #     returned blocks by `block["time"]`.
     #   * Limit-based (legacy): walk tip -> tip-limit+1.
     # Strict coinbase validation runs on every blockhash lookup payload
     # that has a valid height; stale/orphan blocks that still fail
@@ -719,6 +752,7 @@ def block_rewards(
         elif time_window_mode:
             assert start_time is not None and end_time is not None  # narrowed for type checkers
             scanned = 0
+            anchor_lower_bound = _scan_anchor_lower_bound(start_time, time_field)
             for height in range(tip_height, -1, -1):
                 scanned += 1
                 if scanned > _MAX_TIME_RANGE_SCAN_BLOCKS:
@@ -734,17 +768,14 @@ def block_rewards(
                 ownership_passes = entry["is_owned_reward"] or not owned_only
                 if in_window and ownership_passes:
                     blocks.append(entry)
-                # Early termination is only safe for `mediantime`: BIP113
-                # mediantime is non-decreasing on the active chain, so once
-                # we observe a block strictly below start_time no earlier
-                # block can possibly fall back inside the window. Header
-                # `time` carries up to ~2h drift per BIP113 and is therefore
-                # not safe to short-circuit on.
-                if (
-                    time_field == "mediantime"
-                    and selected_time is not None
-                    and selected_time < start_time
-                ):
+                # Early termination uses a scan anchor that is monotonic enough
+                # for a downward walk. For mediantime requests the anchor is the
+                # selected time itself. For block-time requests we keep the
+                # half-open inclusion test on `block["time"]`, but stop once
+                # `mediantime` falls below the lower bound expanded by the
+                # future-time slack above.
+                anchor_time = _scan_anchor_time(entry, time_field)
+                if anchor_time is not None and anchor_time < anchor_lower_bound:
                     break
         else:
             lowest = max(0, tip_height - limit + 1)
