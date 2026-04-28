@@ -1,6 +1,6 @@
 # azcoin-node-api (FastAPI)
 
-Production-ready skeleton for **0.1.7**.
+Production-ready skeleton for **0.1.8**.
 
 This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic, money movement policies, or a database.
 
@@ -132,7 +132,7 @@ Notes:
 - The core RPC port is **not** published to the host; it is only reachable inside `aznet`.
 - `docker-compose.yml` also starts `bitcoin-core` and wires the API via `BTC_RPC_URL` and `BTC_RPC_COOKIE_FILE` (cookie auth; no manual password copying).
 
-## API endpoints (0.1.7)
+## API endpoints (0.1.8)
 
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)
@@ -144,8 +144,8 @@ Notes:
 - **GET** `/v1/az/wallet/transactions?limit=50&since=<blockhash>` (protected; `since` is optional and must be a 64-hex blockhash used with `listsinceblock`)
 - **GET** `/v1/az/blocks/rewards` (protected; recent reward-block details with strict satoshi conversion, ownership classification, optional time-window filtering, and **direct blockhash lookup**. Two modes:
   - *scan mode (default)* — query: `limit` (1–200, default 50), `owned_only` (default `true`; configured pool/reward-wallet filter, see caveat), `start_time` / `end_time` / `time_field` for half-open interval filtering.
-  - *blockhash-lookup mode* — repeated `?blockhash=<64hex>` and/or comma-separated `?blockhashes=<h1>,<h2>` activate direct lookup (max 500 unique hashes per request; ignores `limit`; bypasses the `owned_only` precheck because the caller is naming exact blocks). May be combined with `start_time` / `end_time` / `time_field`.
-  - Top-level metadata always emitted: `lookup_mode` (`"scan"` | `"blockhashes"`), `requested_blockhash_count`, `resolved_blockhash_count`, `unresolved_blockhashes`, `filtered_out_blockhashes`, `time_filter`. See [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 2.1.)
+  - *blockhash-lookup mode* — repeated `?blockhash=<64hex>` and/or comma-separated `?blockhashes=<h1>,<h2>` activate direct lookup (max 500 unique hashes per request; ignores `limit`; bypasses the `owned_only` precheck because the caller is naming exact blocks). May be combined with `start_time` / `end_time` / `time_field`. Hashes that `getblock` resolves but that are **not** active-chain reward truth (e.g. `confirmations <= 0`, `is_on_main_chain: false`, as with stale/orphan blocks) are **excluded from `blocks[]`** and listed only in `stale_blockhashes` — they are not payable and not maturity-eligible. **Ledger code must ingest reward truth only from `blocks[]`**; treat `stale_blockhashes`, `unresolved_blockhashes`, and `filtered_out_blockhashes` as diagnostics.
+  - Top-level metadata always emitted: `lookup_mode` (`"scan"` | `"blockhashes"`), `requested_blockhash_count`, `resolved_blockhash_count`, `unresolved_blockhashes`, `stale_blockhashes` (always `[]` in scan mode), `filtered_out_blockhashes`, `time_filter`. See [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 2.1.)
 - **GET** `/v1/btc/node/info` (protected; calls Bitcoin JSON-RPC and returns normalized info)
 - **POST** `/v1/tx/send` (protected; calls Bitcoin `sendrawtransaction`)
 - **GET** `/v1/translator/status` (protected; merged health: log file panel plus optional live monitoring probe; overall `status` is `ok`, `degraded`, or `unconfigured`)

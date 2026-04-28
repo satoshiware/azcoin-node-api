@@ -150,9 +150,11 @@ clarified.
     `blockhash`; the two are deduplicated together while preserving
     request order (first occurrence wins).
   - `start_time` / `end_time` / `time_field` are honoured when
-    supplied: any resolved block whose selected time field falls
-    outside the half-open `[start_time, end_time)` interval is
-    excluded and its hash is reported in `filtered_out_blockhashes`.
+    supplied: any **payable main-chain** block (see `stale_blockhashes`
+    below) whose selected time field falls outside the half-open
+    `[start_time, end_time)` interval is excluded and its hash is
+    reported in `filtered_out_blockhashes`. Stale / non-main-chain
+    hashes never appear in `filtered_out_blockhashes`.
   - **Per-request cap:** 500 unique hashes
     (`AZ_REWARD_BLOCKHASH_LOOKUP_TOO_LARGE` returns 422 above the
     cap). Invalid hash format returns 422
@@ -165,21 +167,37 @@ clarified.
     `matched_output_indexes`) are still emitted on every entry when
     config is present.
 - **Top-level response metadata (every mode):**
+  - **Ledger rule:** treat **`blocks[]` as the only payable, maturity-
+    eligible reward truth.** Do not ingest accounting rows from
+    `stale_blockhashes`, `unresolved_blockhashes`, or
+    `filtered_out_blockhashes` (those are operator/diagnostic signals
+    only).
   - `lookup_mode`: `"scan"` | `"blockhashes"`.
   - `requested_blockhash_count`: number of unique hashes the caller
     asked for (always `0` in scan mode).
   - `resolved_blockhash_count`: number of entries returned in
     `blocks` (`== len(blocks)`).
   - `unresolved_blockhashes`: hashes the RPC reported as
-    not-found / invalid (e.g. Bitcoin Core `-5 Block not found`).
-    A single bad hash does not crash the whole response.
-  - `filtered_out_blockhashes`: hashes that resolved successfully
-    but were excluded by the optional time window (or whose
-    selected time field was missing / non-int).
-- **Strict-coinbase invariant:** preserved in both modes — a malformed
-  coinbase (negative value, sub-satoshi precision, missing vouts,
-  etc.) raises 502 `AZ_RPC_INVALID_PAYLOAD` rather than being
-  silently demoted to "unresolved". Ledger truth fails loudly.
+    not-found / invalid per-hash application errors (e.g. Bitcoin
+    Core `-5 Block not found`). A single bad hash does not crash the
+    whole response.
+  - `stale_blockhashes`: **blockhash-lookup mode only** (always `[]` in
+    scan mode). Hashes for which `getblock` returned a block object
+    and strict coinbase validation **passed**, but the block is **not**
+    active-chain reward truth: `confirmations <= 0` and/or
+    `is_on_main_chain` is false (typical Core pattern: `confirmations:
+    -1` for stale/orphan blocks). Such blocks are **not** included in
+    `blocks[]`; they are **not payable** and **not maturity-eligible**.
+    They must **not** be listed in `unresolved_blockhashes` or
+    `filtered_out_blockhashes`.
+  - `filtered_out_blockhashes`: hashes for payable main-chain blocks
+    that were excluded only because the optional time window did not
+    apply (or whose selected time field was missing / non-int).
+- **Strict-coinbase invariant:** strict validation runs on every lookup
+  payload with a valid height before stale vs. payable classification.
+  Malformed coinbases raise 502 `AZ_RPC_INVALID_PAYLOAD` and are
+  **never** silently demoted to `stale_blockhashes` or
+  `unresolved_blockhashes`. Ledger truth fails loudly.
 - **Transport invariant:** `AzcoinRpcTransportError` /
   `AzcoinRpcHttpError` / `AzcoinRpcWrongChainError` propagate to the
   standard `AZ_RPC_UNAVAILABLE` (502) / `AZ_WRONG_CHAIN` (503)
@@ -572,6 +590,9 @@ ledger should not rely on `owned_only` filtering; instead it should:
 Hashes the RPC cannot resolve appear in `unresolved_blockhashes` on
 the response and should be surfaced verbatim to the operator (likely
 indicates a chain reorg or a translator-side false-positive).
+Hashes that resolve but are not on the active main chain (stale /
+orphan) appear in `stale_blockhashes` only — **do not** treat them as
+payable rewards; the ledger must still use only `blocks[]` for truth.
 
 **Request:**
 

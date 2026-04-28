@@ -1647,6 +1647,7 @@ def test_az_blocks_rewards_scan_mode_emits_lookup_metadata(monkeypatch):
     assert body["requested_blockhash_count"] == 0
     assert body["resolved_blockhash_count"] == 1
     assert body["unresolved_blockhashes"] == []
+    assert body["stale_blockhashes"] == []
     assert body["filtered_out_blockhashes"] == []
 
 
@@ -1736,6 +1737,105 @@ def _lookup_block(
     )
 
 
+def test_az_blocks_rewards_lookup_mode_stale_orphan_excluded_from_blocks(monkeypatch):
+    """
+    Core-style stale block (confirmations=-1, not on main chain) resolves
+    via getblock but must not appear in blocks[]; hash is only in
+    stale_blockhashes. resolved_blockhash_count counts blocks[] only.
+    """
+    client = _make_client(monkeypatch)
+
+    block_stale = _lookup_block(height=5, confirmations=-1)
+    hash_stale = block_stale["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_stale: block_stale},
+        tip_height=500,
+        tip_hash="a" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_stale}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["blocks"] == []
+    assert body["stale_blockhashes"] == [hash_stale]
+    assert body["resolved_blockhash_count"] == 0
+    assert body["requested_blockhash_count"] == 1
+    assert body["unresolved_blockhashes"] == []
+    assert body["filtered_out_blockhashes"] == []
+
+
+def test_az_blocks_rewards_lookup_mode_mixed_stale_valid_and_missing(monkeypatch):
+    """One stale orphan, one payable main-chain block, one not-found RPC."""
+    client = _make_client(monkeypatch)
+
+    block_stale = _lookup_block(height=1, confirmations=-1)
+    block_ok = _lookup_block(height=2, confirmations=50, address="AZok")
+    hash_stale = block_stale["hash"]
+    hash_ok = block_ok["hash"]
+    hash_missing = "2" * 64
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={
+            hash_stale: block_stale,
+            hash_ok: block_ok,
+            hash_missing: None,
+        },
+        tip_height=500,
+        tip_hash="b" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_stale}&blockhash={hash_ok}"
+        f"&blockhash={hash_missing}",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert [b["blockhash"] for b in body["blocks"]] == [hash_ok]
+    assert body["stale_blockhashes"] == [hash_stale]
+    assert body["unresolved_blockhashes"] == [hash_missing]
+    assert body["requested_blockhash_count"] == 3
+    assert body["resolved_blockhash_count"] == 1
+
+
+def test_az_blocks_rewards_lookup_mode_stale_not_in_filtered_out_with_time_window(
+    monkeypatch,
+):
+    """
+    Optional time window must not list stale hashes in filtered_out_*:
+    they are non-payable and classified only as stale_blockhashes.
+    """
+    client = _make_client(monkeypatch)
+
+    block_stale = _lookup_block(height=3, confirmations=-1, time=1_700_000_550)
+    hash_stale = block_stale["hash"]
+
+    _install_lookup_blockhash_mock(
+        monkeypatch,
+        blocks_by_hash={hash_stale: block_stale},
+        tip_height=500,
+        tip_hash="c" * 64,
+    )
+
+    r = client.get(
+        f"/v1/az/blocks/rewards?blockhash={hash_stale}"
+        "&start_time=1700000400&end_time=1700000500",
+        headers=AUTH_HEADER,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["blocks"] == []
+    assert body["stale_blockhashes"] == [hash_stale]
+    assert body["filtered_out_blockhashes"] == []
+    assert body["unresolved_blockhashes"] == []
+
+
 def test_az_blocks_rewards_lookup_mode_does_not_call_getblockhash(monkeypatch):
     """
     Repeated `?blockhash=` activates direct lookup: no height-based scan
@@ -1766,6 +1866,7 @@ def test_az_blocks_rewards_lookup_mode_does_not_call_getblockhash(monkeypatch):
     assert body["requested_blockhash_count"] == 2
     assert body["resolved_blockhash_count"] == 2
     assert body["unresolved_blockhashes"] == []
+    assert body["stale_blockhashes"] == []
     assert body["filtered_out_blockhashes"] == []
     assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b]
 
@@ -1800,6 +1901,7 @@ def test_az_blocks_rewards_lookup_mode_csv_blockhashes_param(monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["lookup_mode"] == "blockhashes"
+    assert body["stale_blockhashes"] == []
     assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b]
 
 
@@ -1836,6 +1938,7 @@ def test_az_blocks_rewards_lookup_mode_dedupe_preserves_request_order(monkeypatc
     body = r.json()
     assert body["requested_blockhash_count"] == 3
     assert body["resolved_blockhash_count"] == 3
+    assert body["stale_blockhashes"] == []
     assert [b["blockhash"] for b in body["blocks"]] == [hash_a, hash_b, hash_c]
 
 
@@ -1864,6 +1967,7 @@ def test_az_blocks_rewards_lookup_mode_normalizes_case(monkeypatch):
     body = r.json()
     assert body["requested_blockhash_count"] == 1
     assert body["resolved_blockhash_count"] == 1
+    assert body["stale_blockhashes"] == []
     assert body["blocks"][0]["blockhash"] == hash_a
 
 
@@ -1961,6 +2065,7 @@ def test_az_blocks_rewards_lookup_mode_unresolved_blockhash_does_not_crash(monke
     assert body["requested_blockhash_count"] == 2
     assert body["resolved_blockhash_count"] == 1
     assert body["unresolved_blockhashes"] == [hash_missing]
+    assert body["stale_blockhashes"] == []
     assert [b["blockhash"] for b in body["blocks"]] == [hash_good]
 
 
@@ -2020,6 +2125,7 @@ def test_az_blocks_rewards_lookup_mode_time_window_excludes_block_at_end_time(mo
     assert body["filtered_out_blockhashes"] == [hash_at_end]
     assert body["resolved_blockhash_count"] == 0
     assert body["requested_blockhash_count"] == 1
+    assert body["stale_blockhashes"] == []
 
 
 def test_az_blocks_rewards_lookup_mode_time_window_filters_by_mediantime(monkeypatch):
@@ -2056,6 +2162,7 @@ def test_az_blocks_rewards_lookup_mode_time_window_filters_by_mediantime(monkeyp
     assert body["blocks"] == []
     assert body["filtered_out_blockhashes"] == [hash_under]
     assert body["time_filter"]["time_field"] == "mediantime"
+    assert body["stale_blockhashes"] == []
 
 
 def test_az_blocks_rewards_lookup_mode_strict_coinbase_validation_still_applies(monkeypatch):
@@ -2121,6 +2228,7 @@ def test_az_blocks_rewards_lookup_mode_includes_maturity_fields(monkeypatch):
     body = r.json()
 
     by_hash = {b["blockhash"]: b for b in body["blocks"]}
+    assert body["stale_blockhashes"] == []
 
     im = by_hash[hash_immature]
     assert im["is_mature"] is False
@@ -2162,6 +2270,7 @@ def test_az_blocks_rewards_lookup_mode_works_without_ownership_configured(monkey
     body = r.json()
     assert body["ownership_configured"] is False
     assert body["lookup_mode"] == "blockhashes"
+    assert body["stale_blockhashes"] == []
     assert [b["blockhash"] for b in body["blocks"]] == [hash_only]
     # Classification fields are still present, just unmatched.
     assert body["blocks"][0]["is_owned_reward"] is False

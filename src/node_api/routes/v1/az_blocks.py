@@ -421,6 +421,27 @@ def _selected_block_time(
     return None
 
 
+def _is_lookup_mode_payable_main_chain(entry: dict[str, Any]) -> bool:
+    """
+    Return True only when a blockhash-lookup result is safe for ledger
+    ingestion as active-chain reward truth.
+
+    Stale / non-main-chain blocks (Core reports ``confirmations == -1`` for
+    orphans, or missing/non-int confirmations) must be excluded from
+    ``blocks[]``: they are not payable and not eligible for maturity.
+
+    Rule (matches operator contract): exclude when
+    ``confirmations <= 0`` (after normalizing to int), or when
+    ``is_on_main_chain`` is not true.
+    """
+    conf = entry.get("confirmations")
+    if not isinstance(conf, int) or isinstance(conf, bool):
+        return False
+    if conf <= 0:
+        return False
+    return entry.get("is_on_main_chain") is True
+
+
 def _parse_lookup_blockhashes(
     blockhash_list: list[str] | None,
     blockhashes_csv: str | None,
@@ -472,48 +493,68 @@ def _fetch_classified_block_entry_by_hash(
     blockhash: str,
     owned_addresses: frozenset[str],
     owned_scripts: frozenset[str],
-) -> dict[str, Any] | None:
+) -> tuple[Literal["unresolved", "stale", "ok"], dict[str, Any] | None]:
     """
-    Look up a single block by its hash and return the normalized,
-    ownership-classified per-block entry on success.
+    Look up a single block by its hash and classify the result for
+    blockhash-lookup mode.
 
-    Returns ``None`` when the RPC reports a JSON-RPC application error
-    for *this specific hash* (e.g. Bitcoin Core ``-5 Block not found`` /
-    invalid hash format / unknown block) or when the returned payload is
-    structurally unusable (e.g. missing height). The caller appends to
-    ``unresolved_blockhashes`` in that case.
+    Returns one of three states:
+
+    * ``("unresolved", None)`` — the JSON-RPC layer reported an
+      application error for *this specific hash* (e.g. Bitcoin Core
+      ``-5 Block not found`` / invalid hash format / unknown block) or
+      the returned payload is structurally unusable (not an object,
+      missing height). Caller appends to ``unresolved_blockhashes``.
+    * ``("stale", None)`` — ``getblock`` returned a usable object with a
+      valid height and strict coinbase validation **succeeded**, but the
+      block is **not** active-chain reward truth: ``confirmations <= 0``
+      and/or ``is_on_main_chain`` is false (e.g. Core ``confirmations:
+      -1`` for stale/orphan blocks). Caller appends to
+      ``stale_blockhashes``. These hashes must **not** appear in
+      ``blocks[]``, ``unresolved_blockhashes``, or
+      ``filtered_out_blockhashes``.
+    * ``("ok", entry)`` — payable main-chain block. Strict coinbase
+      validation has run, ownership classification fields are attached,
+      and the entry is safe to surface in ``blocks[]`` for ledger use.
 
     ``AzcoinRpcTransportError`` / ``AzcoinRpcHttpError`` /
-    ``AzcoinRpcWrongChainError`` are intentionally propagated; they signal
-    that the *transport* or *chain* is wrong, in which case the entire
-    response should fail closed with the standard 502/503 envelope rather
-    than silently swallowing the failure into "unresolved".
+    ``AzcoinRpcWrongChainError`` are intentionally propagated; they
+    signal that the *transport* or *chain* is wrong, in which case the
+    entire response should fail closed with the standard 502/503
+    envelope rather than silently swallowing the failure.
 
-    A malformed coinbase (negative value, sub-satoshi precision, missing
-    vouts, etc.) raises ``AZ_RPC_INVALID_PAYLOAD`` exactly like scan mode:
-    ledger-truth is preserved by failing loudly rather than returning a
-    suspect total.
+    Strict coinbase validation runs **before** stale vs. payable
+    classification. A malformed coinbase never becomes ``stale`` or
+    ``unresolved``: it raises ``AZ_RPC_INVALID_PAYLOAD`` (502), including
+    for orphan payloads where the node still returned a block object.
+    Only blocks that pass validation and satisfy
+    :func:`_is_lookup_mode_payable_main_chain` become ``("ok", entry)``.
     """
     try:
         block = rpc.call("getblock", [blockhash, 2])
     except AzcoinRpcResponseError:
-        return None
+        return ("unresolved", None)
     if not isinstance(block, dict):
-        return None
+        return ("unresolved", None)
     height = block.get("height")
     if not isinstance(height, int) or isinstance(height, bool) or height < 0:
-        return None
+        return ("unresolved", None)
+
     try:
         entry = _build_block_entry(height, block)
     except ValueError as exc:
         _raise_invalid_payload(f"block {blockhash}: {exc}")
+
+    if not _is_lookup_mode_payable_main_chain(entry):
+        return ("stale", None)
+
     is_owned, matched_indexes, ownership_match = _classify_block_ownership(
         entry["outputs"], owned_addresses, owned_scripts
     )
     entry["is_owned_reward"] = is_owned
     entry["matched_output_indexes"] = matched_indexes
     entry["ownership_match"] = ownership_match
-    return entry
+    return ("ok", entry)
 
 
 @router.get("/rewards")
@@ -632,26 +673,38 @@ def block_rewards(
 
     blocks: list[dict[str, Any]] = []
     unresolved_blockhashes: list[str] = []
+    stale_blockhashes: list[str] = []
     filtered_out_blockhashes: list[str] = []
 
     # ----- Phase 4: walk blocks ---------------------------------------------
     # Three scan modes:
     #   * Blockhash lookup: resolve each user-supplied hash with getblock(2);
-    #     no height walk, `limit` ignored.
+    #     no height walk, `limit` ignored. Each hash is classified into
+    #     unresolved / stale / ok before any time-window filter runs, so
+    #     stale (non-payable) blocks never pollute blocks[] or
+    #     filtered_out_blockhashes. Ledger consumers must use only blocks[].
     #   * Time-window: walk tip -> genesis, capped by _MAX_TIME_RANGE_SCAN_BLOCKS,
     #     with optional early termination for time_field=="mediantime".
     #   * Limit-based (legacy): walk tip -> tip-limit+1.
-    # Strict coinbase validation runs unconditionally on every fetched block
-    # so callers can never receive a partial/zeroed reward total.
+    # Strict coinbase validation runs on every blockhash lookup payload
+    # that has a valid height; stale/orphan blocks that still fail
+    # validation fail the whole request with AZ_RPC_INVALID_PAYLOAD. Once
+    # validation passes, non-payable-main-chain blocks are listed only in
+    # stale_blockhashes, never in blocks[].
     try:
         if blockhash_lookup_mode:
             for input_hash in lookup_hashes:
-                entry = _fetch_classified_block_entry_by_hash(
+                status, entry = _fetch_classified_block_entry_by_hash(
                     rpc, input_hash, owned_addresses, owned_scripts
                 )
-                if entry is None:
+                if status == "unresolved":
                     unresolved_blockhashes.append(input_hash)
                     continue
+                if status == "stale":
+                    stale_blockhashes.append(input_hash)
+                    continue
+                # status == "ok": entry is guaranteed non-None.
+                assert entry is not None
                 if time_window_mode:
                     assert start_time is not None and end_time is not None
                     selected_time = _selected_block_time(entry, time_field)
@@ -721,6 +774,7 @@ def block_rewards(
         "requested_blockhash_count": len(lookup_hashes),
         "resolved_blockhash_count": len(blocks),
         "unresolved_blockhashes": unresolved_blockhashes,
+        "stale_blockhashes": stale_blockhashes,
         "filtered_out_blockhashes": filtered_out_blockhashes,
         "time_filter": {
             "start_time": start_time,
