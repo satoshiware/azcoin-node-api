@@ -2,7 +2,7 @@
 
 Production-ready skeleton for **0.1.8**.
 
-This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic, money movement policies, or a database.
+This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic or money movement policies. It now includes a narrow SQLite store for durable translator `blocks_found` counter-delta evidence only.
 
 ## Quickstart (local)
 
@@ -58,6 +58,7 @@ Copy `.env.example` to `.env`.
 - **TRANSLATOR_LOG_MAX_LINES**: maximum lines read from the log tail per request and upper bound for the `lines` query param (default: `1000`)
 - **TRANSLATOR_MONITORING_BASE_URL**: optional base URL of the translator's built-in monitoring HTTP server (for example `http://127.0.0.1:5000`). When unset, monitoring-backed routes return a stable `unconfigured` envelope instead of calling upstream.
 - **TRANSLATOR_MONITORING_TIMEOUT_SECS**: HTTP timeout for allowlisted monitoring GETs (default: `3`)
+- **TRANSLATOR_BLOCKS_FOUND_DB_PATH**: SQLite path for durable translator `blocks_found` counter-delta evidence and poller state (default: `.data/translator_blocks_found.sqlite3`)
 
 Protected routes (currently `/v1/az/*`, `/v1/btc/*`, `/v1/node/*`, `/v1/tx/*`, `/v1/translator/*`) require:
 
@@ -91,7 +92,7 @@ Edit the env file before first start:
 sudoedit /etc/azcoin-node-api/azcoin-node-api.env
 ```
 
-For this branch, translator log and monitoring routes stay disabled until you set `TRANSLATOR_LOG_PATH` and/or `TRANSLATOR_MONITORING_BASE_URL`. A common testing choice is a translator log under `/var/log/azcoin-node-api/`.
+For this branch, translator log and monitoring routes stay disabled until you set `TRANSLATOR_LOG_PATH` and/or `TRANSLATOR_MONITORING_BASE_URL`. A common testing choice is a translator log under `/var/log/azcoin-node-api/`. Durable translator block-found evidence is separate and writes to `TRANSLATOR_BLOCKS_FOUND_DB_PATH`.
 
 Service commands:
 
@@ -117,6 +118,16 @@ curl \
 ```
 
 Replace `change-me` with the `AZ_API_DEV_TOKEN` value from `/etc/azcoin-node-api/azcoin-node-api.env`. If translator monitoring is configured, you can also verify a live route such as `/v1/translator/miner-work/snapshot` (preferred) or `/v1/translator/status`.
+
+Translator block-found poller command:
+
+```bash
+cd /opt/azcoin-node-api
+source .venv/bin/activate
+export PYTHONPATH=src
+python -m node_api.services.translator_blocks_found_poller --once
+python -m node_api.services.translator_blocks_found_poller
+```
 
 ## Running with Docker
 
@@ -151,6 +162,7 @@ Notes:
 - **GET** `/v1/translator/status` (protected; merged health: log file panel plus optional live monitoring probe; overall `status` is `ok`, `degraded`, or `unconfigured`)
 - **GET** `/v1/translator/summary` (protected; log-backed status plus level/category counts over the log tail; query: `lines` default `500`, max `2000`)
 - **GET** `/v1/translator/miner-work/snapshot` (protected; ledger-ready normalized join of `/upstream/channels` and `/downstreams` keyed by `channel_id`; ledger-sensitive numerics like `share_work_sum` / `best_diff` / `hashrate` are returned as strings; fail-closed when either side is unreachable; see [`docs/api/ledger-mvp-endpoints.md`](docs/api/ledger-mvp-endpoints.md) section 5)
+- **GET** `/v1/translator/blocks-found` (protected; durable API-side translator `blocks_found` counter-delta evidence persisted by the poller; newest-first history over `detected_time`; this does **not** prove chain reward maturity or execute payouts; ledger must still verify rewards through `/v1/az/blocks/rewards`; `channel_id` is metadata only and not payout identity)
 - **GET** `/v1/translator/logs/tail` (protected; newest-first normalized records from the translator log tail; query: `lines`, optional `level`, `contains`)
 - **GET** `/v1/translator/events/recent` (protected; newest-first normalized records; query: `limit`, optional `category`, `level`, `contains`)
 - **GET** `/v1/translator/errors/recent` (protected; newest-first `WARN`/`ERROR` records; query: `limit`)
@@ -166,6 +178,8 @@ Deprecated routes (kept for diagnostics; OpenAPI marks them with `deprecated: tr
 - **GET** `/v1/events/recent-legacy` *(deprecated)* — pre-EventStore in-memory ZMQ buffer; the canonical recent-events endpoint is the EventStore-backed `GET /v1/events/recent`.
 
 Log-backed translator routes reflect **historical** lines from `TRANSLATOR_LOG_PATH` (tail, incidents, aggregates). Monitoring-backed routes reflect **live** translator process state from `TRANSLATOR_MONITORING_BASE_URL` only on a fixed allowlist (no generic proxy). The API does not add config writes, restarts, Prometheus passthrough, or arbitrary upstream paths.
+
+`GET /v1/translator/blocks-found` reads durable API-owned SQLite evidence produced by the translator block-found poller rather than re-scraping logs or querying `journalctl` on request. Each row proves only that a translator-side `blocks_found` counter increased for a stable miner identity at `detected_time`. It does not prove exact blockhash, chain inclusion, reward maturity, payout eligibility, wallet movement, or any payout decision unless separate direct evidence is correlated later.
 
 For `/v1/az/wallet/transactions` with `since`:
 - Invalid `since` format returns `422` with `AZ_INVALID_SINCE`.

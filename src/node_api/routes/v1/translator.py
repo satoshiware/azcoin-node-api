@@ -3,9 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from node_api.services import translator_blocks_found_store as tbfs
 from node_api.services import translator_logs as tl
 from node_api.services import translator_miner_work as tmw
 from node_api.services import translator_monitoring as tm
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/translator", tags=["translator"])
 
 _SUMMARY_DEFAULT_LINES = 500
 _SUMMARY_MAX_LINES = 2000
+_BLOCKS_FOUND_INTERVAL_RULE = "start_time <= detected_time < end_time"
 
 _CLIENT_ID_RE = re.compile(r"^[\w.-]{1,128}$")
 
@@ -154,6 +156,47 @@ class MinerWorkSnapshotResponse(BaseModel):
     detail: str | None = None
 
 
+class TranslatorBlocksFoundEventItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detected_time: int
+    detected_time_iso: str
+    channel_id: int
+    worker_identity: str
+    authorized_worker_name: str | None = None
+    downstream_user_identity: str | None = None
+    upstream_user_identity: str | None = None
+    blocks_found_before: int
+    blocks_found_after: int
+    blocks_found_delta: int
+    share_work_sum_at_detection: str | None = None
+    shares_acknowledged_at_detection: int | None = None
+    shares_submitted_at_detection: int | None = None
+    shares_rejected_at_detection: int | None = None
+    blockhash: str | None = None
+    blockhash_status: str
+    correlation_status: str
+
+
+class TranslatorBlocksFoundTimeFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_time: int | None = None
+    end_time: int | None = None
+    time_field: Literal["detected_time"]
+    interval_rule: str
+
+
+class TranslatorBlocksFoundResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["ok"]
+    source: Literal["translator_blocks_found_events"]
+    total: int
+    time_filter: TranslatorBlocksFoundTimeFilter
+    items: list[TranslatorBlocksFoundEventItem]
+
+
 def _clamp_lines(lines: int, settings: Settings) -> int:
     return max(1, min(lines, settings.translator_log_max_lines))
 
@@ -172,6 +215,16 @@ def _records_to_out(records: list[tl.TranslatorLogRecord]) -> list[TranslatorLog
 
 def _monitoring_envelope(raw: dict[str, Any]) -> TranslatorMonitoringResponse:
     return TranslatorMonitoringResponse.model_validate(raw)
+
+
+def _raise_blocks_found_time_range_invalid() -> None:
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "TRANSLATOR_BLOCKS_FOUND_TIME_RANGE_INVALID",
+            "message": "end_time must be strictly greater than start_time.",
+        },
+    )
 
 
 @router.get("/status", response_model=TranslatorStatusOut)
@@ -250,6 +303,57 @@ def translator_miner_work_snapshot(
     """
     return MinerWorkSnapshotResponse.model_validate(
         tmw.build_miner_work_snapshot(settings)
+    )
+
+
+@router.get("/blocks-found", response_model=TranslatorBlocksFoundResponse)
+def translator_blocks_found(
+    settings: Settings = Depends(get_settings),
+    start_time: int | None = Query(default=None, ge=0),
+    end_time: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=100, ge=1, le=1000),
+    worker_identity: str | None = Query(default=None),
+    channel_id: int | None = Query(default=None),
+    blockhash_status: str | None = Query(default=None),
+) -> TranslatorBlocksFoundResponse:
+    """Durable translator block-found counter-delta evidence.
+
+    This route exposes persisted counter-delta observations from the
+    translator poller. It is evidence that a translator-side
+    ``blocks_found`` counter increased for a worker identity; it does not
+    prove chain inclusion, reward maturity, payout eligibility, or wallet
+    movement. Ledger code must still verify rewards through
+    ``/v1/az/blocks/rewards``.
+    """
+    if (
+        start_time is not None
+        and end_time is not None
+        and end_time <= start_time
+    ):
+        _raise_blocks_found_time_range_invalid()
+
+    store = tbfs.TranslatorBlocksFoundStore.from_settings(settings)
+    total, items = store.list_events(
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        worker_identity=worker_identity,
+        channel_id=channel_id,
+        blockhash_status=blockhash_status,
+    )
+    return TranslatorBlocksFoundResponse.model_validate(
+        {
+            "status": "ok",
+            "source": "translator_blocks_found_events",
+            "total": total,
+            "time_filter": {
+                "start_time": start_time,
+                "end_time": end_time,
+                "time_field": "detected_time",
+                "interval_rule": _BLOCKS_FOUND_INTERVAL_RULE,
+            },
+            "items": items,
+        }
     )
 
 

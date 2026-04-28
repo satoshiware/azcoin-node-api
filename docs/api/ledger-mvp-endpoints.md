@@ -1,8 +1,10 @@
 # Ledger MVP — API Contract
 
-**Status:** Draft proposal, no production code changes yet.
+**Status:** Partially implemented. Translator snapshot and translator
+block-found evidence endpoints are live; ledger endpoints below remain
+the proposal surface.
 **Owner:** azcoin-node-api maintainers.
-**Last updated:** 2026-04-27.
+**Last updated:** 2026-04-28.
 **Scope:** Defines which API surface owns which kind of truth for the
 SC-node reward / ledger MVP, and lists the endpoint changes needed to
 get there. This document is the single source of truth for the *shape*
@@ -63,7 +65,7 @@ What it must **not** answer:
 - *What is each worker owed in satoshis?* (that is ledger truth.)
 
 Endpoint family: `/v1/translator/*` (today: `downstreams`,
-`upstream/channels`, etc.).
+`upstream/channels`, `miner-work/snapshot`, `blocks-found`, etc.).
 
 ### 1.3 Ledger API = accounting truth
 
@@ -246,6 +248,7 @@ means cosmetic / contract-level rename without breaking behavior;
 | `GET /v1/translator/upstream/channels`                | translator     | Keep             |
 | `owned_only` query param + `AZ_REWARD_OWNERSHIP_*`    | (chain filter) | Deprecate/rename |
 | `GET /v1/translator/miner-work/snapshot`              | translator     | Add              |
+| `GET /v1/translator/blocks-found`                     | translator     | Add              |
 | `POST /v1/ledger/intervals`                           | ledger         | Add              |
 | `POST /v1/ledger/intervals/{id}/snapshots/start`      | ledger         | Add              |
 | `POST /v1/ledger/intervals/{id}/snapshots/end`        | ledger         | Add              |
@@ -440,6 +443,35 @@ The endpoint inherits the translator passthrough error model:
 
 ## 6. Add ledger endpoint specs — `/v1/ledger/*`
 
+### Translator Blocks Found Evidence (`GET /v1/translator/blocks-found`)
+
+- **Truth role:** translator local-work evidence.
+- **Auth:** protected.
+- **What it does:** exposes durable API-side event evidence written by a
+  separate poller process that repeatedly reads
+  `/v1/translator/miner-work/snapshot` and persists every positive
+  `blocks_found` counter delta for a stable miner identity.
+- **Source:** this API's SQLite store at
+  `TRANSLATOR_BLOCKS_FOUND_DB_PATH`, populated by
+  `python -m node_api.services.translator_blocks_found_poller`.
+- **What each row means:** "at observation time `detected_time`, this
+  worker identity's translator-side `blocks_found` counter increased
+  from `blocks_found_before` to `blocks_found_after`."
+- **What it does *not* mean:** by itself it does **not** prove chain
+  inclusion, block reward maturity, payout eligibility, wallet
+  movement, or an exact blockhash. The ledger must still verify rewards
+  through `/v1/az/blocks/rewards`.
+- **Identity rule:** `worker_identity` / `authorized_worker_name` is the
+  miner identity. `channel_id` is metadata only and must not be used as
+  payout identity because reconnects can move the same miner to a new
+  channel id.
+- **Current correlation status:** the initial implementation is
+  `counter_delta_only`; `blockhash` remains null and
+  `blockhash_status="unresolved"` unless direct evidence is added in a
+  later revision.
+
+---
+
 ### 6.1 Data model overview (informative)
 
 The following is the conceptual model the ledger endpoints expose.
@@ -577,9 +609,10 @@ shared pool wallet (section 1.4), reward attribution from chain-side
 coinbase inspection is structurally impossible. In that case the
 ledger should not rely on `owned_only` filtering; instead it should:
 
-1. Collect block hashes from translator block-found logs / events
-   (today: `/v1/translator/events/recent`; future:
-   `/v1/translator/block-candidates`, section 7).
+1. Collect block hashes from translator block-found evidence
+   (today: prefer `/v1/translator/blocks-found` for durable counter-
+   delta evidence and correlate it with any direct translator evidence
+   available; future: `/v1/translator/block-candidates`, section 7).
 2. Call `/v1/az/blocks/rewards` in **blockhash-lookup mode**
    (`?blockhash=<h>` repeated, or `?blockhashes=<h1>,<h2>`) with the
    interval's optional time window applied for sanity. This
@@ -846,8 +879,9 @@ not be silently introduced through any of the endpoints above:
   chain. The ledger is an off-chain accounting record only.
 - **No exact blockhash-to-worker attribution** unless and until the
   translator persists candidate events (section 7).
-- **No DB persistence in this PR.** This document is design-only; the
-  storage layer is a separate follow-up.
+- **No hidden accounting or payout state in the translator evidence
+  store.** `/v1/translator/blocks-found` persists only translator
+  counter-delta evidence; it does not create balances or spend funds.
 
 ---
 

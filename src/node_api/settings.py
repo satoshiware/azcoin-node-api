@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     translator_monitoring_timeout_secs: float = Field(
         default=3.0, ge=0.1, validation_alias="TRANSLATOR_MONITORING_TIMEOUT_SECS"
     )
+    translator_blocks_found_db_path: str = Field(
+        default=".data/translator_blocks_found.sqlite3",
+        validation_alias="TRANSLATOR_BLOCKS_FOUND_DB_PATH",
+    )
 
     # Auth (stub)
     auth_mode: Literal["dev_token", "jwt"] | None = Field(
@@ -92,6 +96,15 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return str(value).strip().rstrip("/") if isinstance(value, str) else value
+
+    @field_validator("translator_blocks_found_db_path", mode="before")
+    @classmethod
+    def _blank_translator_blocks_found_db_path(cls, value: object) -> str:
+        if value is None:
+            return ".data/translator_blocks_found.sqlite3"
+        if isinstance(value, str) and not value.strip():
+            return ".data/translator_blocks_found.sqlite3"
+        return str(value).strip() if isinstance(value, str) else str(value)
 
     @model_validator(mode="before")
     @classmethod
