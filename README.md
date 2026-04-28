@@ -1,6 +1,6 @@
 # azcoin-node-api (FastAPI)
 
-Production-ready skeleton for **0.1.8**.
+Production-ready skeleton for **0.2.0**.
 
 This repo contains API scaffolding (settings, logging, routing, auth stub, tests, and Docker) plus JSON-RPC client wiring for AZCoin/Bitcoin nodes. It does **not** implement wallet/account business logic or money movement policies. It now includes a narrow SQLite store for durable translator `blocks_found` counter-delta evidence only.
 
@@ -143,7 +143,7 @@ Notes:
 - The core RPC port is **not** published to the host; it is only reachable inside `aznet`.
 - `docker-compose.yml` also starts `bitcoin-core` and wires the API via `BTC_RPC_URL` and `BTC_RPC_COOKIE_FILE` (cookie auth; no manual password copying).
 
-## API endpoints (0.1.8)
+## API endpoints (0.2.0)
 
 - **GET** `/v1/health` (no auth)
 - **GET** `/v1/az/node/info` (protected; calls AZCoin JSON-RPC and returns normalized info)

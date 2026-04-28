@@ -7,7 +7,7 @@ from node_api.version import get_version
 
 
 def test_get_version_returns_version_file_value() -> None:
-    assert get_version() == "0.1.8"
+    assert get_version() == "0.2.0"
 
 
 def test_version_endpoint_returns_service_version(monkeypatch) -> None:
@@ -23,4 +23,4 @@ def test_version_endpoint_returns_service_version(monkeypatch) -> None:
 
     response = client.get("/version")
     assert response.status_code == 200
-    assert response.json() == {"version": "0.1.8", "service": "azcoin-api"}
+    assert response.json() == {"version": "0.2.0", "service": "azcoin-api"}

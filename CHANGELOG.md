@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.8] - 2026-04-27
+## [0.2.0] - 2026-04-27
 
 - Added `GET /v1/az/blocks/rewards` with strict integer-satoshi coinbase totals (`Decimal(str(value)) * 100_000_000`, no rounding) and per-output details (`index`, `value_sats`, `address`, `script_type`, `script_pub_key_hex`).
 - Added per-block maturity fields: `is_mature`, `blocks_until_mature`, `maturity_status`, `maturity_height`.
